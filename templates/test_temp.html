@@ -1,0 +1,22 @@
+
+<!doctype html>
+<title>{% block title %}{% endblock %} Move Tracker</title>
+<!-- <table border=1> -->
+  <!-- <li>{{data}}</li> -->
+<!-- {% for item in data %}
+    <li>{{item['utc_time']}}</li>
+{% endfor %} -->
+ <!-- </table> -->
+ {%for i in range(0, len)%} 
+  
+    <li>{{data[i]}}</li> 
+{%endfor%} 
+
+    <script>
+      console.log("Hey world!");
+  </script>
+ <!-- {% for list_value in data %}
+  {% for a_value in list_value %}
+    {{ a_value }}
+  {% endfor %}
+{% endfor %} -->

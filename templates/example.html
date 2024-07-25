@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    {{"decoupled-map"|googlemap_js(37.4419, -122.1419, markers=[(37.4419,
+    -122.1419)])}} {{map.js}}
+    <title>OwnTrack</title>
+
+    <!-- <link rel="stylesheet" type="text/css" href="example.css"> -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
+  </head>
+  <body>
+     {{map.html}}
+
+      {% if delete  is sameas true %}
+       <form class="form-inline" action="/execute_delete", method=post>
+          <input type=hidden value={{ request.args.get('start_date') }} name=start_date >
+          <input type=hidden value={{ request.args.get('end_date') }} name=end_date >
+          <input type=hidden value={{ request.args.get('lon_left') }} name=lon_left >
+          <input type=hidden value={{ request.args.get('lon_right') }} name=lon_right >
+          <input type=hidden value={{ request.args.get('lat_top') }} name=lat_top >
+          <input type=hidden value={{ request.args.get('lat_bot') }} name=lat_bot >
+          <button type="submit">Delete Points</button>
+        </form> 
+      {% else %}
+        <form class="form-inline" action="/">
+        {% if points is sameas true %}
+          <input type=hidden value=True name=points >
+        {% endif %}
+          <label for="email">Start</label>
+          <input type="text" id="start" value="{{start}}" placeholder="{{start}}" name="start">
+          <label for="pwd">End</label>
+          <input type="text" id="end" value="{{end}}" placeholder="{{end}}" name="end">
+          <button type="submit">Submit</button>
+        </form> 
+      {% endif %}
+
+  </body>
+</html>
