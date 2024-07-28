@@ -1,3 +1,3 @@
 #! /bin/sh
 
-/usr/local/bin/python /project/import_gpx_google.py
+/usr/local/bin/python /project/addpoints_gpx_google.py

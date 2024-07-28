@@ -1,3 +1,4 @@
 *.sqlite
 *.gpx
+__pycache__
 Records.json

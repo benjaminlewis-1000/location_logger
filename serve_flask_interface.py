@@ -26,6 +26,7 @@ from werkzeug.utils import secure_filename
 import dateutil
 import location_db
 import dateutil.parser
+import config
 
 # USGS Elevation Point Query Service
 url = r'https://nationalmap.gov/epqs/pqs.php?'
@@ -44,32 +45,33 @@ def elevation_function(lat, lon):
     result = requests.get((url + urllib.parse.urlencode(params)))
     return result.json()['USGS_Elevation_Point_Query_Service']['Elevation_Query']['Elevation']
 
-engine = create_engine('sqlite:////data/location.sqlite', echo=False)
 
+database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
 
-conn = engine.connect()
+# engine = create_engine('sqlite:////data/location.sqlite', echo=False)
+# conn = engine.connect()
 
-metadata = MetaData()
-users = Table('users', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('dev_id', String),
-    )
+# metadata = MetaData()
+# users = Table('users', metadata,
+#         Column('id', Integer, primary_key=True),
+#         Column('dev_id', String),
+#     )
 
-positions = Table('positions', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('date', DateTime),
-        Column('utc_time', Float, index=True),
-        Column('user_id', None, ForeignKey('users.id')),
-        Column('latitude', Float),
-        Column('longitude', Float),
-        Column('altitude', Float),
-        Column('battery', Integer),
-        Column('accuracy', Float),
-        Column('speed', Float),
-        Column('source', String)
-    )
+# positions = Table('positions', metadata,
+#         Column('id', Integer, primary_key=True),
+#         Column('date', DateTime),
+#         Column('utc_time', Float, index=True),
+#         Column('user_id', None, ForeignKey('users.id')),
+#         Column('latitude', Float),
+#         Column('longitude', Float),
+#         Column('altitude', Float),
+#         Column('battery', Integer),
+#         Column('accuracy', Float),
+#         Column('speed', Float),
+#         Column('source', String)
+#     )
 
-metadata.create_all(engine)
+# metadata.create_all(engine)
 
 # Initialize the Flask application
 app = Flask(__name__)
@@ -82,54 +84,6 @@ app.config['GOOGLEMAPS_KEY'] = os.environ['GMAP_API_KEY']
 app.config['UPLOAD_FOLDER'] = "/data"
 GoogleMaps(app)
 
-def add_to_db(location_dict):
-
-
-    user_q = select([users.c.id]).where(users.c.dev_id == location_dict['dev_id'])
-    user_res = conn.execute(user_q)
-    
-    user_id = user_res.fetchone()
-    if user_id == None:
-        user_ins = users.insert().values(dev_id=location_dict['dev_id'])
-        result = conn.execute(user_ins)
-        user_id = result.inserted_primary_key[0]
-    else:
-        user_id = user_id[0]
-
-    # build a response dict to send back to client
-    response = {'message': 'received'}
-
-
-    # Occasionally, we get two post requests for the same datapoint. To avoid that, 
-    # see if this UTC time is already in the database, and return if it is. 
-    s = select([positions]).where(positions.c.utc_time == location_dict['utc']) # .count()# 
-    results = conn.execute(s)
-    num_results = len(results.fetchall())
-#    num_results = results.fetchone()[0]
-
-    if num_results == 0:
-        
-        alt = float(location_dict['altitude'])
-#        if alt == 0:
-#            try:
-#                alt = elevation_function(location_dict['lat'], location_dict['lon'])
-#            except requests.exceptions.ConnectionError:
-#                print("Bad alt function...")
-#                return {'message': 'error'}
-#                alt = 0                
-
-        ins = positions.insert().values(date=location_dict['date'], utc_time=location_dict['utc'], latitude=location_dict['lat'], \
-            longitude=location_dict['lon'], altitude=alt, battery=int(float(location_dict['battery'])), \
-            accuracy=location_dict['accuracy'], speed=location_dict['speed'], user_id=user_id, source=location_dict['source'])
-        # print(ins)
-        result = conn.execute(ins)
-
-        s = select([positions.c.user_id])
-        r = conn.execute((s))
-    
-        return {'message': 'logged'}
-
-    return {'message': 'finished'}
 
 
 @app.route('/log', methods=['GET', 'POST'])
@@ -166,7 +120,7 @@ def alive():
     print(pos_data)
 
     try:
-        response = add_to_db(pos_data)
+        response = database.insert_location(pos_data)
         print(response)
     except:
         print("Bad response...")
@@ -275,7 +229,7 @@ def view():
 
     vals = request.args
     if 'start' in vals:
-        start, specific_start = calc_start( vals['start'], default_start='1970')
+        start, specific_start = database.calc_start( vals['start'], default_start='1970')
     else:
         start = default_start # dateutil.parser.parse('1970-1-1')
         specific_start = False
@@ -301,20 +255,13 @@ def view():
     else:
         end_datetime = end.strftime('%Y-%m-%d')
 
-    pc = positions.c
-    pos_qry = select([pc.date, pc.utc_time, pc.latitude, pc.longitude])\
-        .where(pc.utc_time >= start_utc)\
-        .where(pc.utc_time <= end_utc)\
-        .order_by(pc.utc_time.asc())
-    print('start', start)
-    data = conn.execute(pos_qry)
-    print('end', end)
+    data = database.retrieve_points(start_utc = start_utc, end_utc = end_utc)
+
     data_array = []
 
     polyline_path = []
     markers = []
 
-    data = data.fetchall()
     print(len(data))
 
     def even_select(N, M):
@@ -332,20 +279,23 @@ def view():
     if len(data) > 100000:
         idcs = even_select(len(data), 100000)
         idcs = np.where(idcs == 1)[0]
-        data = [data[i] for i in idcs]
+        data = data.iloc[idcs]
+#        data = [data[i] for i in idcs]
     print("Subsampled")
 
     # Sample the data evenly so that we have a manageable chunk. 
 
     if len(data) > 0:
-        for r in data:
+        print(data)
+        for r in range(len(data)):
 
-            r_dict = dict(r)
-            dict_date = r_dict['date']
+            r_dict = data.iloc[r]
+            dict_date = r_dict['datetime']
             data_array.append(r_dict)
             if dict_date is None:
                 continue
             plus_sec = dict_date + timedelta(seconds=1)
+            # print(plus_sec)
             plus_sec = plus_sec.strftime('%Y-%m-%d %H:%M:%S')
             min_sec = dict_date - timedelta(seconds=1)
             min_sec = min_sec.strftime('%Y-%m-%d %H:%M:%S')
@@ -363,21 +313,21 @@ def view():
             redir_element = f'''<form action={base_url_https}execute_delete method="post">
                                   <input type=hidden name=start_date value={min_sec}>
                                   <input type=hidden name=end_date value={plus_sec}>
-                                  <input type=hidden name=lat_top value={r_dict["latitude"]+1e-5}>
-                                  <input type=hidden name=lat_bot value={r_dict["latitude"]-1e-5}>
-                                  <input type=hidden name=lon_left value={r_dict["longitude"]-1e-5}>
-                                  <input type=hidden name=lon_right value={r_dict["longitude"]+1e-5}>
+                                  <input type=hidden name=lat_top value={r_dict["lat"]+1e-5}>
+                                  <input type=hidden name=lat_bot value={r_dict["lat"]-1e-5}>
+                                  <input type=hidden name=lon_left value={r_dict["lon"]-1e-5}>
+                                  <input type=hidden name=lon_right value={r_dict["lon"]+1e-5}>
                                   <button type='submit' name='delete' value='Delete'>Delete Point</button>
                                 </form>
                                   '''
                 
-            polyline_path.append({'lat': r_dict['latitude'], 'lng': r_dict['longitude']})
+            polyline_path.append({'lat': r_dict['lat'], 'lng': r_dict['lon']})
             markers.append({'icon': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png', 
-                            'lat': r_dict['latitude'], 
-                            'lng': r_dict['longitude'],
+                            'lat': r_dict['lat'], 
+                            'lng': r_dict['lon'],
                             'infobox': redir_element,
                             })
-            # markers.append(  (r_dict['latitude'], r_dict['longitude']) )
+            # markers.append(  (r_dict['lat'], r_dict['longitude']) )
 
         c_lat, c_lon, zoom = calc_map_center(markers)
 
@@ -486,44 +436,46 @@ def view3():
             pos_data['altitude'] = 0
             pos_data['speed'] = 0
 
-        response = add_to_db(pos_data)
+        response = database.insert_location(pos_data)
 
         return Response(response= jsonpickle.encode({'error': 'false'}), status=200, mimetype="application/json")
 
 
-def __del_request_prep__(vals):
+# def __del_request_prep__(vals):
 
-    assert 'start_date' in vals
-    assert 'end_date' in vals
-    assert 'lat_top' in vals
-    assert 'lat_bot' in vals
-    assert 'lon_left' in vals
-    assert 'lon_right' in vals
+#     assert 'start_date' in vals
+#     assert 'end_date' in vals
+#     assert 'lat_top' in vals
+#     assert 'lat_bot' in vals
+#     assert 'lon_left' in vals
+#     assert 'lon_right' in vals
         
-    sval = vals['start_date']
-    start, specific_start = calc_start( vals['start_date'], default_start='now')
-    end, specific_end = calc_end(vals['end_date'])
+#     sval = vals['start_date']
+#     start, specific_start = calc_start( vals['start_date'], default_start='now')
+#     end, specific_end = calc_end(vals['end_date'])
 
-    start_utc = int(start.strftime('%s'))
-    end_utc = int(end.strftime('%s'))
-    lat_top = float(vals['lat_top'])
-    lat_bot = float(vals['lat_bot'])
-    lon_left = float(vals['lon_left'])
-    lon_right = float(vals['lon_right'])
+#     start_utc = int(start.strftime('%s'))
+#     end_utc = int(end.strftime('%s'))
+#     lat_top = float(vals['lat_top'])
+#     lat_bot = float(vals['lat_bot'])
+#     lon_left = float(vals['lon_left'])
+#     lon_right = float(vals['lon_right'])
 
-    if specific_start:
-        start_datetime = start.strftime('%Y-%m-%d %H:%M:%S')
-    else:
-        start_datetime = start.strftime('%Y-%m-%d')
-    if specific_end:
-        end_datetime = start.strftime('%Y-%m-%d %H:%M:%S')
-    else:
-        end_datetime = end.strftime('%Y-%m-%d')
+#     if specific_start:
+#         start_datetime = start.strftime('%Y-%m-%d %H:%M:%S')
+#     else:
+#         start_datetime = start.strftime('%Y-%m-%d')
+#     if specific_end:
+#         end_datetime = start.strftime('%Y-%m-%d %H:%M:%S')
+#     else:
+#         end_datetime = end.strftime('%Y-%m-%d')
 
-    return start_utc, end_utc, lat_top, lat_bot, lon_left, lon_right, start_datetime, end_datetime
+#     return start_utc, end_utc, lat_top, lat_bot, lon_left, lon_right, start_datetime, end_datetime
 
 
 
+'''
+# Not sure if this can be deleted? 
 @app.route('/delete_points', methods=['GET', 'POST'])
 def del_pt():
     vals = request.values
@@ -592,7 +544,7 @@ def del_pt():
 
     # return Response(response= jsonpickle.encode({'num_pts': len(data)}), status=200, mimetype="application/json")
     # return render_template('example.html', num_pts = len(data))
-
+'''
 
 @app.route('/execute_delete', methods=['POST'])
 def delete_execute():
@@ -605,69 +557,13 @@ def delete_execute():
             resp = {'error': f"The key {req_val} was not in the URL."}
             return Response(response= jsonpickle.encode(resp), status=200, mimetype="application/json")
 
-    start_utc, end_utc, lat_top, lat_bot, lon_left, lon_right, start_datetime, end_datetime = __del_request_prep__(vals)
+    # start_utc, end_utc, lat_top, lat_bot, lon_left, 
+    # lon_right, start_datetime, end_datetime = __del_request_prep__(vals)
+    database.delete_point(vals)
 
-    pc = positions.c
-    d_query = positions.delete().where(pc.utc_time >= start_utc)\
-        .where(pc.utc_time <= end_utc)\
-        .where(pc.latitude >= lat_bot)\
-        .where(pc.latitude <= lat_top)\
-        .where(pc.longitude >= lon_left)\
-        .where(pc.longitude <= lon_right)
-
-    conn.execute(d_query)
     
     return Response(response=jsonpickle.encode({"status": "OK"}), status=200, mimetype="application/json")
 
-#     vals = request.values
-
-#     assert 'start_date' in vals
-#     assert 'end_date' in vals
-#     assert 'lat_top' in vals
-#     assert 'lat_bot' in vals
-#     assert 'lon_left' in vals
-#     assert 'lon_right' in vals
-        
-#     sval = vals['start_date']
-#     if re.match('^\d\d$', sval) or re.match('^\d\d\d\d$', sval):
-#         sval = sval + '-01-01'
-#     try:
-#         start = dateutil.parser.parse(sval)
-#         if re.match('^\d\d.?\d\d$', sval) or re.match('^\d\d\d\d.?\d\d$', sval):
-#             start = start + dateutil.relativedelta.relativedelta(day=1)
-#     except:
-#         start = datetime.now()
-
-
-#     enval = vals['end_date']
-#     if re.match('^\d\d$', enval) or re.match('^\d\d\d\d$', enval):
-#         enval = enval + '-12-31'
-#     try:
-#         end = dateutil.parser.parse(enval)
-#         if re.match('^\d\d.?\d\d$', enval) or re.match('^\d\d\d\d.?\d\d$', enval):
-#             end = end + dateutil.relativedelta.relativedelta(day=31)
-#     except:
-#         end = datetime.now()
-
-#     start_utc = int(start.strftime('%s'))
-#     end_utc = int(end.strftime('%s'))
-#     lat_top = float(vals['lat_top'])
-#     lat_bot = float(vals['lat_bot'])
-#     lon_left = float(vals['lon_left'])
-#     lon_right = float(vals['lon_right'])
-
-#     pc = positions.c
-#     pos_qry = select([positions])\
-#         .where(pc.utc_time >= start_utc)\
-#         .where(pc.utc_time <= end_utc)\
-#         .where(pc.latitude >= lat_bot)\
-#         .where(pc.latitude <= lat_top)\
-#         .where(pc.longitude >= lon_left)\
-#         .where(pc.longitude <= lon_right)\
-#         .order_by(pc.utc_time.asc())
-
-#     data = conn.execute(pos_qry)
-#     data = data.fetchall()
 
 
 if __name__ == '__main__':

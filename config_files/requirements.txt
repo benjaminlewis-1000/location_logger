@@ -2,7 +2,8 @@ flask-cors
 flask-googlemaps
 flask-login
 flask-sqlalchemy
-flask==1.1.1
+Flask==2.0.2
+# flask==1.1.1
 flask_session
 geocoder
 geopandas
@@ -14,7 +15,16 @@ jsonpickle
 matplotlib
 plotly
 python-dateutil
-shapely
 sqlalchemy
 tqdm
 werkzeug
+sqlalchemy_utils
+shapely
+pyproj
+setuptools
+cartopy
+numpy
+pandas
+scikit-learn
+fiona
+Werkzeug==2.2.2

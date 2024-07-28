@@ -2,10 +2,14 @@
 
 import os
 import gpxpy
-import add_vals_quick
 import time
 import shutil
 from datetime import datetime, timedelta
+
+import location_db
+import config
+
+database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
 
 source_folder = '/data/gdrive_data/unprocessed'
 dest_folder = '/data/gdrive_data/processed'
@@ -31,7 +35,7 @@ def read_process_gps(file):
                 if user_id in uid_dict.keys():
                     uuid = uid_dict[user_id]
                 else:
-                    uuid = add_vals_quick.get_user_id(user_id)
+                    uuid = database.get_user_id(user_id)
                     uid_dict[user_id] = uuid
 
 
@@ -54,7 +58,10 @@ def read_process_gps(file):
                 pos_data['speed'] = 0
                 pos_data['source'] = 'hist'
 
-                add_vals_quick.add_to_db(pos_data)
+                database.insert_location(pos_data)
+                
+                # print("Here")
+                # exit()
 
 
 for root, dirs, _ in os.walk(source_folder):
@@ -63,7 +70,6 @@ for root, dirs, _ in os.walk(source_folder):
         gpx_files = [f for f in d_files if f.endswith('.gpx')]
         # print(d, gpx_files)
         no_fails = True
-        print(d)
         os.makedirs(os.path.join(dest_folder, d), exist_ok=True)
         for gg in gpx_files:
             source_path = os.path.join(root, d, gg)
@@ -73,7 +79,7 @@ for root, dirs, _ in os.walk(source_folder):
 
             try:
                 read_process_gps(source_path)
-                shutil.move(source_path, dest_path)
+                # shutil.move(source_path, dest_path)
             except Exception as e:
                 print(f"Failure! {source_path}, {e}")
                 no_fails = False

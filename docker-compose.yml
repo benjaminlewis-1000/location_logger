@@ -4,7 +4,7 @@ services:
   location_track2:
     build:
       context: .
-      dockerfile: config_files/Dockerfile
+      dockerfile: config_files/Dockerfile_ubuntu
       args:
         buildno: 1
     image:
@@ -13,7 +13,7 @@ services:
     env_file:
       - .env
     command:
-      sh /project/startup.sh
+      sh  /project/config_files/startup.sh
 #      gunicorn -b 0.0.0.0:5000 test_flask:app
     # entrypoint:
     #   # serve -s build

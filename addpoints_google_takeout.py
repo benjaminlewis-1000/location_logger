@@ -22,6 +22,10 @@ import requests
 import sqlalchemy
 import time
 import urllib
+import location_db
+import config
+
+database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
 
 # USGS Elevation Point Query Service
 url = r'https://nationalmap.gov/epqs/pqs.php?'
@@ -43,101 +47,6 @@ def elevation_function(lat, lon):
     print("------------")
     return result.json()['USGS_Elevation_Point_Query_Service']['Elevation_Query']['Elevation']
 
-engine = create_engine('sqlite:////data/location.sqlite', echo=False)
-
-
-conn = engine.connect()
-
-metadata = MetaData()
-users = Table('users', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('dev_id', String),
-    )
-
-positions = Table('positions', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('date', DateTime),
-        Column('utc_time', Float, index=True),
-        Column('user_id', None, ForeignKey('users.id')),
-        Column('latitude', Float),
-        Column('longitude', Float),
-        Column('altitude', Float),
-        Column('battery', Integer),
-        Column('accuracy', Float),
-        Column('speed', Float),
-        Column('source', String)
-    )
-
-metadata.create_all(engine)
-
-def add_to_db(location_dict):
-
-
-
-    # Occasionally, we get two post requests for the same datapoint. To avoid that, 
-    # see if this UTC time is already in the database, and return if it is. 
-#    sel_qry = select([positions.c.utc_time]).where(positions.c.utc_time == location_dict['utc']).count()# 
-    # sel_qry = sqlalchemy.text('SELECT COUNT * FROM Positions WHERE UTC_TIME = ')
-#    results = conn.execute(sel_qry)
-#    num_results = results.fetchone()[0]
-
-    # st = time.time()
-    s = select([positions]).where(positions.c.utc_time == location_dict['utc']) # .count()# 
-    results = conn.execute(s)
-    num_results = len(results.fetchall())
-
-    # print(time.time() - st)
-    # exit()
-
-    # sel_qry2 = select([positions.c.utc_time])# 
-    # results = conn.execute(sel_qry2)
-    # num_results = results.fetchall()
-    # print(len(num_results))
-    # exit()
-
-    if num_results == 0:
-        # print("Not in database!")
-
-        alt = float(location_dict['altitude'])
-        # if alt == 0:
-        #     try:
-        #         alt = elevation_function(location_dict['lat'], location_dict['lon'])
-        #     except requests.exceptions.ConnectionError as ce:
-        #         # print('elevation eror: ', ce)
-        #         # time.sleep(1)
-        #         # return {'message': 'error'}
-        #         alt = 0
-        #     except requests.exceptions.JSONDecodeError as je:
-        #         alt = 0
-
-        ins = positions.insert().values(date=location_dict['date'], utc_time=location_dict['utc'], latitude=location_dict['lat'], \
-            longitude=location_dict['lon'], altitude=alt, battery=int(float(location_dict['battery'])), \
-            accuracy=location_dict['accuracy'], speed=location_dict['speed'], user_id=location_dict['uuid'], source=location_dict['source'])
-        # print(ins)
-        result = conn.execute(ins)
-
-        s = select([positions.c.user_id])
-        r = conn.execute((s))
-    
-        return {'message': 'logged'}
-    else:
-        # print("In database!")
-        pass
-
-    return {'message': 'finished'}
-
-def get_user_id(name):
-    user_q = select([users.c.id]).where(users.c.dev_id == name)
-    user_res = conn.execute(user_q)
-    
-    user_id = user_res.fetchone()
-    if user_id == None:
-        user_ins = users.insert().values(dev_id=name)
-        result = conn.execute(user_ins)
-        user_id = result.inserted_primary_key[0]
-    else:
-        user_id = user_id[0]
-    return user_id
 
 
 def json_parse(fileobj, decoder=JSONDecoder(), buffersize=2048, seek_offset = None):
@@ -207,7 +116,7 @@ if __name__ == "__main__":
     last_was_home = False
     done = 0
 
-    with open('/project/Records.json', 'r') as infh:
+    with open('Records.json', 'r') as infh:
         for data_item in json_parse(infh, seek_offset=813260000):
 
             print(data_item['timestamp'])
@@ -252,7 +161,7 @@ if __name__ == "__main__":
             if user_id in uid_dict.keys():
                 uuid = uid_dict[user_id]
             else:
-                uuid = get_user_id(user_id)
+                uuid = database.get_user_id(user_id)
                 uid_dict[user_id] = uuid
         
             pos_data = {}
@@ -268,9 +177,9 @@ if __name__ == "__main__":
             pos_data['speed'] = 0
             pos_data['source'] = 'hist'
 
-            add_to_db(pos_data)
+            database.insert_location(pos_data)
             # try:
-            #     add_to_db(pos_data)
+            #     database.insert_location(pos_data)
             # except Exception as e:
             #     print("DB error: ", e)
 
