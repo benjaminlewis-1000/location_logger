@@ -129,14 +129,13 @@ def alive():
 
     return Response(response=jsonpickle.encode(response), status=200, mimetype="application/json")
 
-def calc_map_center(markers):
+def calc_map_center(lat_list, lon_list):
 
-    lats = [x['lat'] for x in markers]
-    lons = [x['lng'] for x in markers]
-    min_lat = min(lats)
-    max_lat = max(lats)
-    min_lon = min(lons)
-    max_lon = max(lons)
+    min_lat = min(lat_list)
+    max_lat = max(lat_list)
+    min_lon = min(lon_list)
+    max_lon = max(lon_list)
+
     c_lat = (max_lat - min_lat) / 2 + min_lat
     c_lon = (max_lon - min_lon) / 2 + min_lon
 
@@ -173,48 +172,48 @@ def calc_map_center(markers):
 
     return c_lat, c_lon, zoom
 
-def calc_start(start_string, default_start='now'):
-    assert default_start in ['now', '1970']
-    if re.match('^\d\d$', start_string) or re.match('^\d\d\d\d$', start_string):
-        start_string = start_string + '-01-01'
-    try:
-        start = dateutil.parser.parse(start_string)
-        if re.match('^\d\d.?\d\d$', start_string) or re.match('^\d\d\d\d.?\d\d$', start_string):
-            start = start + dateutil.relativedelta.relativedelta(day=1)
-    except:
-        if default_start == '1970':
-            start = dateutil.parser.parse('1970-1-1')
-        else:
-            start = datetime.now()
+# def calc_start(start_string, default_start='now'):
+#     assert default_start in ['now', '1970']
+#     if re.match('^\d\d$', start_string) or re.match('^\d\d\d\d$', start_string):
+#         start_string = start_string + '-01-01'
+#     try:
+#         start = dateutil.parser.parse(start_string)
+#         if re.match('^\d\d.?\d\d$', start_string) or re.match('^\d\d\d\d.?\d\d$', start_string):
+#             start = start + dateutil.relativedelta.relativedelta(day=1)
+#     except:
+#         if default_start == '1970':
+#             start = dateutil.parser.parse('1970-1-1')
+#         else:
+#             start = datetime.now()
 
-    if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', start_string):
-        specific = True
-    else:
-        specific = False
+#     if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', start_string):
+#         specific = True
+#     else:
+#         specific = False
 
-    return start, specific
+#     return start, specific
 
-def calc_end(end_string, default_end='now'):
+# def calc_end(end_string, default_end='now'):
 
-    assert default_end in ['now', '1970']
+#     assert default_end in ['now', '1970']
 
-    if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', end_string):
-        specific = True
-    else:
-        specific = False  
+#     if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', end_string):
+#         specific = True
+#     else:
+#         specific = False  
 
-    if re.match('^\d\d$', end_string) or re.match('^\d\d\d\d$', end_string):
-        end_string = end_string + '-12-31'
-    try:
-        end = dateutil.parser.parse(end_string)
-        if re.match('^\d\d.?\d\d$', end_string) or re.match('^\d\d\d\d.?\d\d$', end_string):
-            end = end + dateutil.relativedelta.relativedelta(day=31)
-        if not specific:
-            end = end + dateutil.relativedelta.relativedelta(hour=23, minute=59, second=59)
-    except:
-        end = datetime.now()
+#     if re.match('^\d\d$', end_string) or re.match('^\d\d\d\d$', end_string):
+#         end_string = end_string + '-12-31'
+#     try:
+#         end = dateutil.parser.parse(end_string)
+#         if re.match('^\d\d.?\d\d$', end_string) or re.match('^\d\d\d\d.?\d\d$', end_string):
+#             end = end + dateutil.relativedelta.relativedelta(day=31)
+#         if not specific:
+#             end = end + dateutil.relativedelta.relativedelta(hour=23, minute=59, second=59)
+#     except:
+#         end = datetime.now()
       
-    return end, specific
+#     return end, specific
 
 @app.route('/', methods=['GET', 'POST'])
 @cross_origin(origin='*',headers=['Content-Type','Authorization'])
@@ -234,7 +233,7 @@ def view():
         start = default_start # dateutil.parser.parse('1970-1-1')
         specific_start = False
     if 'end' in vals:
-        end, specific_end = calc_end(vals['end'])
+        end, specific_end = database.calc_end(vals['end'])
     else:
         end = datetime.now()
         specific_end = False
@@ -257,8 +256,6 @@ def view():
 
     data = database.retrieve_points(start_utc = start_utc, end_utc = end_utc)
 
-    data_array = []
-
     polyline_path = []
     markers = []
 
@@ -280,56 +277,62 @@ def view():
         idcs = even_select(len(data), 100000)
         idcs = np.where(idcs == 1)[0]
         data = data.iloc[idcs]
-#        data = [data[i] for i in idcs]
-    print("Subsampled")
+        print("Subsampled")
 
     # Sample the data evenly so that we have a manageable chunk. 
 
+
     if len(data) > 0:
         print(data)
-        for r in range(len(data)):
 
-            r_dict = data.iloc[r]
-            dict_date = r_dict['datetime']
-            data_array.append(r_dict)
-            if dict_date is None:
-                continue
-            plus_sec = dict_date + timedelta(seconds=1)
-            # print(plus_sec)
-            plus_sec = plus_sec.strftime('%Y-%m-%d %H:%M:%S')
-            min_sec = dict_date - timedelta(seconds=1)
-            min_sec = min_sec.strftime('%Y-%m-%d %H:%M:%S')
-            
-       # <form class="form-inline" action="/execute_delete", method=post>
-       #    <input type=hidden value={{ request.args.get('start_date') }} name=start_date >
-       #    <input type=hidden value={{ request.args.get('end_date') }} name=end_date >
-       #    <input type=hidden value={{ request.args.get('lon_left') }} name=lon_left >
-       #    <input type=hidden value={{ request.args.get('lon_right') }} name=lon_right >
-       #    <input type=hidden value={{ request.args.get('lat_top') }} name=lat_top >
-       #    <input type=hidden value={{ request.args.get('lat_bot') }} name=lat_bot >
-       #    <button type="submit">Delete Points</button>
-       #  </form> 
-            base_url_https = re.sub('^http:', 'https:', request.base_url)
-            redir_element = f'''<form action={base_url_https}execute_delete method="post">
-                                  <input type=hidden name=start_date value={min_sec}>
-                                  <input type=hidden name=end_date value={plus_sec}>
-                                  <input type=hidden name=lat_top value={r_dict["lat"]+1e-5}>
-                                  <input type=hidden name=lat_bot value={r_dict["lat"]-1e-5}>
-                                  <input type=hidden name=lon_left value={r_dict["lon"]-1e-5}>
-                                  <input type=hidden name=lon_right value={r_dict["lon"]+1e-5}>
-                                  <button type='submit' name='delete' value='Delete'>Delete Point</button>
-                                </form>
-                                  '''
+        null_dates = data.datetime.isnull()
+        not_null_dates = ~null_dates
+
+        data = data[not_null_dates]
+
+        data_lats = data['lat'].tolist()
+        data_lons = data['lon'].tolist()
+        data_ids = data['id'].tolist()
+
+        base_url_https = re.sub('^http:', 'https:', request.base_url)
+
+        if 'points' in vals:
+            markers = [{'icon': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png', 
+                                'lat': data_lats[ridx], 
+                                'lng': data_lons[ridx],
+                                'infobox': f'''<form action={base_url_https}execute_delete method="post">
+                                               <input type=hidden name=id value={data_ids[ridx]}>
+                                               <button type='submit' name='delete' value='Delete'>Delete Point</button>
+                                               </form>
+                                            '''} \
+                        for ridx in range(len(data)) ]
+        else:
+            polyline_path = [{'lat': data_lats[ridx], 'lng': data_lons[ridx]} \
+                for ridx in range(len(data))]
+       #  for ridx in range(len(data)):
+
+       # # <form class="form-inline" action="/execute_delete", method=post>
+       # #    <input type=hidden value={{ request.args.get('start_date') }} name=start_date >
+       # #    <input type=hidden value={{ request.args.get('end_date') }} name=end_date >
+       # #    <input type=hidden value={{ request.args.get('lon_left') }} name=lon_left >
+       # #    <input type=hidden value={{ request.args.get('lon_right') }} name=lon_right >
+       # #    <input type=hidden value={{ request.args.get('lat_top') }} name=lat_top >
+       # #    <input type=hidden value={{ request.args.get('lat_bot') }} name=lat_bot >
+       # #    <button type="submit">Delete Points</button>
+       # #  </form> 
                 
-            polyline_path.append({'lat': r_dict['lat'], 'lng': r_dict['lon']})
-            markers.append({'icon': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png', 
-                            'lat': r_dict['lat'], 
-                            'lng': r_dict['lon'],
-                            'infobox': redir_element,
-                            })
-            # markers.append(  (r_dict['lat'], r_dict['longitude']) )
+       #      if 'points' in vals:
+       #          redir_element = 
+       #          markers.append({'icon': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png', 
+       #                          'lat': data_lats[ridx], 
+       #                          'lng': data_lons[ridx],
+       #                          'infobox': redir_element,
+       #                          })
+       #      else:
+       #          polyline_path.append({'lat': data_lats[ridx], 'lng': data_lons[ridx]})
 
-        c_lat, c_lon, zoom = calc_map_center(markers)
+
+        c_lat, c_lon, zoom = calc_map_center(data_lats, data_lons)
 
     else:
         zoom = 3
@@ -337,66 +340,52 @@ def view():
         c_lat = 45
         c_lon = -85
 
-    # polyline = {
-    #     "stroke_color": "#0AB0DE",
-    #     "stroke_opacity": 1.0,
-    #     "stroke_weight": 3,
-    #     "path": [
-    #         {"lat": 33.678, "lng": -116.243},
-    #         {"lat": 33.679, "lng": -116.244},
-    #         {"lat": 33.680, "lng": -116.250},
-    #         {"lat": 33.681, "lng": -116.239},
-    #         {"lat": 33.678, "lng": -116.243},
-    #     ],
-    # }
-    polyline = {
-        "stroke_color": "#0AB0DE",
-        "stroke_opacity": 1.0,
-        "stroke_weight": 3,
-        "path": polyline_path,
-    }
-    plinemap = Map(
-        identifier="plinemap",
-        varname="plinemap",
-        lat=c_lat,
-        lng=c_lon,
-        zoom=zoom,
-        polylines=[polyline],
-        style=(
-            "height:100%;"
-            "width:100%;"
-            "top:0;"
-            "left:0;"
-            "position:absolute;"
-            "z-index:200;"
-        ),
-    )
-
-    sndmap = Map(
-        identifier="sndmap",
-        lat=c_lat,
-        lng=c_lon,
-        style=(
-            "height:100%;"
-            "width:100%;"
-            "top:0;"
-            "left:0;"
-            "position:absolute;"
-            "z-index:200;"
-        ),
-        zoom=zoom,
-        # polylines=[polyline_path],
-        markers=markers
-    )
-
-
-    print("Finished method")
-    rr = render_template('example.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
-    # print(rr)
     if 'points' in vals:
+        sndmap = Map(
+            identifier="sndmap",
+            lat=c_lat,
+            lng=c_lon,
+            style=(
+                "height:100%;"
+                "width:100%;"
+                "top:0;"
+                "left:0;"
+                "position:absolute;"
+                "z-index:200;"
+            ),
+            zoom=zoom,
+            # polylines=[polyline_path],
+            markers=markers
+        )
+
         return render_template('example.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
     else:
+
+        polyline = {
+            "stroke_color": "#0AB0DE",
+            "stroke_opacity": 1.0,
+            "stroke_weight": 3,
+            "path": polyline_path,
+        }
+        plinemap = Map(
+            identifier="plinemap",
+            varname="plinemap",
+            lat=c_lat,
+            lng=c_lon,
+            zoom=zoom,
+            polylines=[polyline],
+            style=(
+                "height:100%;"
+                "width:100%;"
+                "top:0;"
+                "left:0;"
+                "position:absolute;"
+                "z-index:200;"
+            ),
+        )
+
         return render_template('example.html', map=plinemap, start=start_datetime, end=end_datetime, delete=False, points=False)
+
         
     # return flask.render_template('test_temp.html', len=len(data_array), data=data_array)
     
@@ -552,14 +541,14 @@ def delete_execute():
     print(request.form)
     vals = request.form
     
-    for req_val in ['start_date', 'end_date', 'lat_top', 'lat_bot', 'lon_left', 'lon_right']:
-        if not req_val in vals:
-            resp = {'error': f"The key {req_val} was not in the URL."}
-            return Response(response= jsonpickle.encode(resp), status=200, mimetype="application/json")
+    if 'id' not in vals:
+        resp = {'error': f"The key 'id' was not in the URL payload."}
+        return Response(response= jsonpickle.encode(resp), status=200, mimetype="application/json")
 
     # start_utc, end_utc, lat_top, lat_bot, lon_left, 
     # lon_right, start_datetime, end_datetime = __del_request_prep__(vals)
-    database.delete_point(vals)
+    # database.delete_point(vals)
+    database.delete_by_id(data_id = vals['id'])
 
     
     return Response(response=jsonpickle.encode({"status": "OK"}), status=200, mimetype="application/json")
