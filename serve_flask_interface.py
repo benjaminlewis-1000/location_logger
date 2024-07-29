@@ -94,6 +94,7 @@ def alive():
 
     data = request.data.decode('utf-8')
     data = data.split('&')
+    print(data)
     vals = {a.split('=')[0]:a.split('=')[1] for a in data if a != ''}
     print(data, vals, request)
     
@@ -277,7 +278,7 @@ def view():
         idcs = even_select(len(data), 100000)
         idcs = np.where(idcs == 1)[0]
         data = data.iloc[idcs]
-        print("Subsampled")
+        print("Subsampled", len(data))
 
     # Sample the data evenly so that we have a manageable chunk. 
 

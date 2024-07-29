@@ -4,7 +4,7 @@ services:
   location_track2:
     build:
       context: .
-      dockerfile: config_files/Dockerfile_ubuntu
+      dockerfile: config_files/Dockerfile
       args:
         buildno: 1
     image:

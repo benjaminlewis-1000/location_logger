@@ -1,4 +1,5 @@
 from sqlalchemy import create_engine, text
+import re
 from sqlalchemy_utils import database_exists, create_database
 from sqlalchemy.sql import select
 import sqlalchemy
@@ -7,6 +8,8 @@ from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, Dat
 import pandas as pd
 import math
 from datetime import datetime
+import dateutil.parser
+import dateutil
 
 class locationDB:
     """docstring for locationDB"""
@@ -210,11 +213,6 @@ class locationDB:
 
         user_id = self.get_user_id(location_dict['dev_id'])
 
-
-        # s = select(self.positions.c.user_id)
-        # r = self.conn.execute(s)
-        
-
         # build a response dict to send back to client
         response = {'message': 'received'}
 
@@ -320,3 +318,10 @@ if __name__ == "__main__":
     pos_data['utc'] = ts + 1
     item.insert_location(pos_data)
     print(item.retrieve_points(start_utc = ts-1, end_utc = ts+10))
+
+    # import requests
+
+    # response = requests.post("https://owntracks.exploretheworld.tech/log", 
+    #     data="lat=0&lon=0&timestamp=0&acc=9999&spd=5")
+    # print(response, dir(response))
+    # print(response.text)

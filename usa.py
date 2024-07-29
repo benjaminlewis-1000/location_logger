@@ -5,6 +5,8 @@ import os
 import pandas as pd
 import plotly.express as px
 import numpy as np
+from plotly import utils
+from json import dumps
 
 with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
     counties = json.load(response)

@@ -79,7 +79,7 @@ for root, dirs, _ in os.walk(source_folder):
 
             try:
                 read_process_gps(source_path)
-                # shutil.move(source_path, dest_path)
+                shutil.move(source_path, dest_path)
             except Exception as e:
                 print(f"Failure! {source_path}, {e}")
                 no_fails = False
