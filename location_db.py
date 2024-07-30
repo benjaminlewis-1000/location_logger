@@ -209,6 +209,19 @@ class locationDB:
 
         return data
 
+    def retrieve_all_data(self):
+        pc = self.positions.c
+
+        all_qry = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.county_processed)\
+            .order_by(pc.utc_time.asc())
+        data = self.conn.execute(all_qry)
+
+        data = data.fetchall()
+        data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc'])
+
+        return data
+
+
     def insert_location(self, location_dict: dict):
 
         user_id = self.get_user_id(location_dict['dev_id'])

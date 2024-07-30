@@ -22,6 +22,7 @@ import config
 
 # # Load the json file with county coordinates
 geoData = gpd.read_file(config.basic_county_json)
+database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
         # 'gz_2010_us_050_00_20m.json', encoding='latin1'
 # )
 #     # 'https://raw.githubusercontent.com/holtzy/The-Python-Graph-Gallery/master/static/data/US-counties.geojson'
@@ -83,31 +84,19 @@ ORDER BY diff ASC
 LIMIT 1;
 '''
 
-print('p1')
-exit()
-# position_q = select(positions.c).where(positions.c.county_processed == False).order_by(positions.c.utc_time)
-# pos_res = conn.execute(position_q)
-# data = pos_res.fetchall()
-# print('p2')
-
 # Get all the data in the table. Since I can't find a 
 # performant SQL query that will find the row with the 
 # minimum UTC time difference, I'll do it with 
 # fetching all the data once and using numpy. 
-pc = positions.c
-alldata_q = select([pc.id, pc.county_processed, pc.latitude, pc.longitude, pc.utc_time])
-alldata = conn.execute(alldata_q)
-alldata = alldata.fetchall()
-alldata = pd.DataFrame(alldata)
+alldata = database.retrieve_all_data()
 
-unprocessed_data = alldata[alldata.county_processed == False]
+unprocessed_data = alldata[alldata.county_proc.isnull()]
 print(f"There are {len(unprocessed_data)} points.")
 data = unprocessed_data[:100]
 
-utc_index = alldata.utc_time.to_numpy()
+utc_index = alldata.utc.to_numpy()
 
-print(data[0])
-# exit()
+exit()
 
 
 # for didx in range(len(data) - 1):
