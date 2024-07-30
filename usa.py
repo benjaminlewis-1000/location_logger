@@ -7,9 +7,28 @@ import plotly.express as px
 import numpy as np
 from plotly import utils
 from json import dumps
+import config
 
-with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
-    counties = json.load(response)
+import geopandas as gpd
+# counties = gpd.read_file(config.basic_county_json, encoding='latin1').to_geo_dict()
+
+# d = gpd.read_file(config.basic_county_json, encoding='latin1')
+# d2 = gpd.read_file(config.county_geojson, encoding='latin1')
+# exit()
+with open(config.basic_county_json, 'rb') as geodata:
+    counties = json.load(geodata)
+
+    # , encoding="ISO-8859-1")
+
+# # with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
+# with open(config.county_geojson, 'r') as geodata:
+#     counties2 = json.load(geodata)
+
+
+
+# print(counties['features'][0])
+# print(counties2['features'][0])
+# exit()
 
 tsfile = 'time_series_covid19_confirmed_US.csv'
 tsurl = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/' + tsfile

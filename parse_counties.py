@@ -12,17 +12,17 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from tqdm import tqdm
 import pandas as pd
-import county_db
+import location_db
 import sqlalchemy
 import numpy as np
+import config
 # from sqlalchemy.engine.reflection import Inspector
 
 # county_db_instance = county_db.countyDB(db_name = 'county.sqlite', fips_file = 'state_and_county_fips_master.csv')
 
 # # Load the json file with county coordinates
-# geoData = gpd.read_file(
-#         # 'gz_2010_us_050_00_20m.json', encoding='latin1'
-#         'gz_2010_us_050_00_500k.json', encoding='latin1'
+geoData = gpd.read_file(config.basic_county_json)
+        # 'gz_2010_us_050_00_20m.json', encoding='latin1'
 # )
 #     # 'https://raw.githubusercontent.com/holtzy/The-Python-Graph-Gallery/master/static/data/US-counties.geojson'
 
@@ -33,39 +33,39 @@ import numpy as np
 # # exit()
 
 
-engine = create_engine('sqlite:////home/benjamin/location_track/location.sqlite', echo=False)
-insp = sqlalchemy.inspect(engine)
-conn = engine.connect()
+# engine = create_engine('sqlite:////home/benjamin/location_track/location.sqlite', echo=False)
+# insp = sqlalchemy.inspect(engine)
+# conn = engine.connect()
 
-# Check that the table has a 'county_computed' field
-assert set(insp.get_table_names()) == set(['users', 'positions'])
-columns = insp.get_columns('positions')
-cnames = [c['name'] for c in columns]
-if 'county_processed' not in cnames:
-    print("Newcol")
-    engine.execute('alter table positions add column county_processed Boolean default False')
-# exit()
+# # Check that the table has a 'county_computed' field
+# assert set(insp.get_table_names()) == set(['users', 'positions'])
+# columns = insp.get_columns('positions')
+# cnames = [c['name'] for c in columns]
+# if 'county_processed' not in cnames:
+#     print("Newcol")
+#     engine.execute('alter table positions add column county_processed Boolean default False')
+# # exit()
 
-metadata = MetaData()
-users = Table('users', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('dev_id', String),
-    )
+# metadata = MetaData()
+# users = Table('users', metadata,
+#         Column('id', Integer, primary_key=True),
+#         Column('dev_id', String),
+#     )
 
-positions = Table('positions', metadata,
-        Column('id', Integer, primary_key=True),
-        Column('date', DateTime),
-        Column('utc_time', Float, index=True),
-        Column('user_id', None, ForeignKey('users.id')),
-        Column('latitude', Float),
-        Column('longitude', Float),
-        Column('altitude', Float),
-        Column('battery', Integer),
-        Column('accuracy', Float),
-        Column('speed', Float),
-        Column('source', String),
-        Column('county_processed', Boolean),
-    )
+# positions = Table('positions', metadata,
+#         Column('id', Integer, primary_key=True),
+#         Column('date', DateTime),
+#         Column('utc_time', Float, index=True),
+#         Column('user_id', None, ForeignKey('users.id')),
+#         Column('latitude', Float),
+#         Column('longitude', Float),
+#         Column('altitude', Float),
+#         Column('battery', Integer),
+#         Column('accuracy', Float),
+#         Column('speed', Float),
+#         Column('source', String),
+#         Column('county_processed', Boolean),
+#     )
 
 # exit()
 
@@ -84,6 +84,7 @@ LIMIT 1;
 '''
 
 print('p1')
+exit()
 # position_q = select(positions.c).where(positions.c.county_processed == False).order_by(positions.c.utc_time)
 # pos_res = conn.execute(position_q)
 # data = pos_res.fetchall()
