@@ -114,6 +114,8 @@ class locationDB:
         assert type(county_year_tuple) == tuple
         assert len(county_year_tuple) == 2
         county_fips, year = county_year_tuple
+        print("----------")
+        print(county_fips, year, county_year_tuple)
         assert type(county_fips) == str
         assert type(year) == int
 
@@ -153,17 +155,20 @@ class locationDB:
         self.conn.execute(query)
         self.conn.commit()
 
+        query_cty = self.counties.update() \
+                    .values(visited = False)
+        self.conn.execute(query_cty)
+        self.conn.commit()
+
     def set_point_county_processed(self, position_id: int):
         # Set the value of 'county_processed' in the positions 
         # table for a point with position_id
         assert type(position_id) in [int, np.int32, np.int64]
         position_id = int(position_id)
-        print(position_id, type(position_id))
 
         exists = select(self.positions.c.id).where(self.positions.c.id == position_id )
         result = self.conn.execute(exists)
         data = result.fetchall()
-        print(data[-10:])
 
         query = self.positions.update() \
             .where(self.positions.c.id == position_id) \
