@@ -113,27 +113,31 @@ class locationDB:
 
         assert type(county_year_tuple) == tuple
         assert len(county_year_tuple) == 2
-        county_fips, year = county_year_tuple
-        print("----------")
-        print(county_fips, year, county_year_tuple)
+        county_fips, update_year = county_year_tuple
         assert type(county_fips) == str
-        assert type(year) == int
+        assert type(update_year) == int
 
         if len(county_fips) != 5:
             county_fips = re.sub('.*US', '', county_fips)
         assert len(county_fips) == 5
 
         fips_statement = self.counties.c.fips == county_fips
-        exists = select(self.counties.c).where(fips_statement)
+        exists = select(self.counties.c.fips, self.counties.c.visited, self.counties.c.year).where(fips_statement)
         result = self.conn.execute(exists)
         data = result.fetchall()
+        # print(data)
         assert len(data) == 1
-        print(data)
+        cfips, visited, visit_year = data[0]
+        # print(data, visit_year, cfips, visited)
 
-        # Set the data
-        county_update = self.counties.update().where(fips_statement).values(visited=True, year=year)
-        self.conn.execute(county_update)
-        self.conn.commit()
+        if update_year <= visit_year and visited:
+            # print("No update")
+            pass
+        else:
+            # Set the data
+            county_update = self.counties.update().where(fips_statement).values(visited=True, year=update_year)
+            self.conn.execute(county_update)
+            self.conn.commit()
 
     def set_visited_multiple_counties(self, county_fips_ids: list):
         # Check that the fips is in the table
@@ -387,6 +391,11 @@ if __name__ == "__main__":
     pos_data['utc'] = ts + 1
     item.insert_location(pos_data)
     print(item.retrieve_points(start_utc = ts-1, end_utc = ts+10))
+
+    county_pair = ('0500000US13265', 2016)
+    county_pair2 = ('0500000US13265', 2012)
+    item.set_visited_county(county_pair)
+    item.set_visited_county(county_pair2)
 
     # import requests
 
