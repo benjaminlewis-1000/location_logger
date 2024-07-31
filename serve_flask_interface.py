@@ -282,7 +282,7 @@ def view():
 
     # Sample the data evenly so that we have a manageable chunk. 
 
-
+    print(len(data))
     if len(data) > 0:
         print(data)
 
@@ -341,6 +341,8 @@ def view():
         c_lat = 45
         c_lon = -85
 
+    print(c_lat, c_lon, zoom)
+
     if 'points' in vals:
         sndmap = Map(
             identifier="sndmap",
@@ -361,6 +363,7 @@ def view():
 
         return render_template('example.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
     else:
+        print("ll", len(polyline_path))
 
         polyline = {
             "stroke_color": "#0AB0DE",
@@ -385,6 +388,7 @@ def view():
             ),
         )
 
+        print(plinemap)
         return render_template('example.html', map=plinemap, start=start_datetime, end=end_datetime, delete=False, points=False)
 
         

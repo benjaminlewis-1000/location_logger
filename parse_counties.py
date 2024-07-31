@@ -88,58 +88,79 @@ LIMIT 1;
 # performant SQL query that will find the row with the 
 # minimum UTC time difference, I'll do it with 
 # fetching all the data once and using numpy. 
+# database.unset_all_points()
 alldata = database.retrieve_all_data()
+print(alldata)
 
-unprocessed_data = alldata[alldata.county_proc.isnull()]
+unprocessed_data = alldata[alldata.county_proc.isnull() | alldata.county_proc == False]
 print(f"There are {len(unprocessed_data)} points.")
 data = unprocessed_data[:100]
+# print(unprocessed_data)
 
 utc_index = alldata.utc.to_numpy()
-
-exit()
+# print(utc_index)
 
 
 # for didx in range(len(data) - 1):
-county_ids = set()
-state_ids = set()
+# county_ids = set()
+# last_county = None
+
+# id0, date0, utc0, lat0, lon0, county_processed = data.iloc[0]
+# # pid0, _, lat0, lon0, utc0 = data.iloc[0]
+# qpt = Point(map(float, (lon0, lat0)))
+# county = geoData[geoData['geometry'].contains(qpt)]
+# idx = 1
+# database.set_point_county_processed(id0)
+# while len(county) == 0:
+#     id0, date0, utc0, lat0, lon0, county_processed = data.iloc[idx]
+#     qpt = Point(map(float, (lon0, lat0)))
+#     county = geoData[geoData['geometry'].contains(qpt)]
+#     database.set_point_county_processed(id0)
+#     idx += 1
+
+# county_year_pair = (county['GEO_ID'].item(), date0.year)
+
+# # last_county = county
+# print(county_year_pair)
+# database.set_visited_county(county_year_pair)
+# county_ids.add(county_year_pair)
+
+# exit()
 last_county = None
 
-pid0, _, lat0, lon0, utc0 = data[0]
-qpt = Point(map(float, (lon0, lat0)))
-county = geoData[geoData['geometry'].contains(qpt)]
-idx = 1
-while len(county) == 0:
-    pid0, _, lat0, lon0, utc0 = data[idx]
-    qpt = Point(map(float, (lon0, lat0)))
-    county = geoData[geoData['geometry'].contains(qpt)]
-    idx += 1
+for didx in tqdm(range(10, len(data) - 1)):
 
-last_county = county
-county_ids.add(county['GEO_ID'].item())
-state_ids.add(county['STATE'].item())
-
-for didx in tqdm(range(idx, len(data) - 1)):
-    pid0, _, lat0, lon0, utc0 = data.iloc[didx]
+    id0, date0, utc0, lat0, lon0, _ = data.iloc[didx]
     # Find the closest index. 
     utc_diffs = utc0 - utc_index
-    utc_eligible = np.where(utc_diffs > 0)
+    utc_eligible = np.array(np.where(utc_diffs > 0)[0])
+    if len(utc_diffs) == 0:
+        database.set_point_county_processed(id0)
+        continue
     eligible_idx = np.argmin(utc_diffs[utc_eligible])
     closest_time_diff = int(utc_diffs[utc_eligible][eligible_idx])
-    closest_time_idx = int(utc_eligible[0][eligible_idx])
+    closest_time_idx = int(utc_eligible[eligible_idx])
     closest_time_data = alldata.iloc[closest_time_idx]
+    # print(closest_time_data)
 
-    pid1, _, lat1, lon1, utc1 = closest_time_data
+    id1, date1, utc1, lat1, lon1, _ = closest_time_data
     coord1 = (lat0, lon0) # data[didx][1], data[didx][2])
     coord2 = (lat1, lon1) # data[didx + 1][1], data[didx + 1][2])
     dist = geopy.distance.geodesic(coord1, coord2).m
     # print(dist)
-    time = utc0 - utc1 # data[didx + 1][3] - data[didx][3]
-    assert time > 0 
-    if time > 0:
-        speed = dist / time
+    timediff = utc0 - utc1 # data[didx + 1][3] - data[didx][3]
+    
+    assert timediff >= 0 
+
+    if timediff == 0:
+        database.set_point_county_processed(id0)
+        continue
+
+    if timediff > 0:
+        speed = dist / timediff
         # print(speed, "m/s")
         if speed < 65:
-            pass
+
             qpt = Point(map(float, (lon1, lat1)))
             if last_county is not None:
                 in_county = last_county['geometry'].contains(qpt)
@@ -152,9 +173,20 @@ for didx in tqdm(range(idx, len(data) - 1)):
                         assert len(county) == 1
                         last_county = county
                         print(f"New county! {county['NAME'].item()}")
-                        county_ids.add(county['GEO_ID'].item())
-                        state_ids.add(county['STATE'].item())
+                        # county_ids.add(county['GEO_ID'].item())
+                        year = date0.year
+                        county_fips_id = county['GEO_ID'].item()
+                        new_county_pair = (county_fips_id, year)
+                        print(new_county_pair)
+                        county_ids.add(new_county_pair)
+                        database.set_visited_county()
+            else:
+                in_county = geoData[geoData['geometry'].contains(qpt)]
+                print(in_county)
         # Then you can look up the county.
-    assert time >= 0
+        else:
+            # This point was too fast. 
+            database.set_point_county_processed(id0)
+    assert timediff >= 0
 
-    
+print(database.get_num_visited(), 'counties visited')

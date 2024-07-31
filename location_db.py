@@ -7,6 +7,7 @@ import csv
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float, Boolean
 import pandas as pd
 import math
+import numpy as np
 from datetime import datetime
 import dateutil.parser
 import dateutil
@@ -31,6 +32,7 @@ class locationDB:
                 Column('name', String),
                 Column('state', String),
                 Column('visited', Boolean),
+                Column('year', Integer)
             )
 
         self.users = Table('users', metadata,
@@ -69,11 +71,19 @@ class locationDB:
             columns = insp.get_columns('positions')
             cnames = [c['name'] for c in columns]
             if 'county_processed' not in cnames:
-                print("Newcol")
                 sql_insert = 'alter table positions add column county_processed Boolean default False'
                 with self.engine.begin() as conn2:
                     result = conn2.execute(text(sql_insert)) 
                     conn2.commit()
+                    
+            columns = insp.get_columns('counties')
+            cnames = [c['name'] for c in columns]
+            if 'year' not in cnames:
+                sql_insert = 'alter table counties add column year Integer default -1'
+                with self.engine.begin() as conn2:
+                    result = conn2.execute(text(sql_insert)) 
+                    conn2.commit()
+
 
             
         insp = sqlalchemy.inspect(self.engine)
@@ -98,21 +108,34 @@ class locationDB:
                 r = self.conn.execute(mkcounty)
         self.conn.commit()
 
-    def set_visited(self, county_fips_id: str):
+    def set_visited_county(self, county_year_tuple: tuple):
         # Check that the fips is in the table
 
-        fips_statement = self.counties.c.fips == county_fips_id
+        assert type(county_year_tuple) == tuple
+        assert len(county_year_tuple) == 2
+        county_fips, year = county_year_tuple
+        assert type(county_fips) == str
+        assert type(year) == int
+
+        if len(county_fips) != 5:
+            county_fips = re.sub('.*US', '', county_fips)
+        assert len(county_fips) == 5
+
+        fips_statement = self.counties.c.fips == county_fips
         exists = select(self.counties.c).where(fips_statement)
         result = self.conn.execute(exists)
         data = result.fetchall()
         assert len(data) == 1
+        print(data)
 
         # Set the data
-        county_update = self.counties.update().where(fips_statement).values(visited=True)
+        county_update = self.counties.update().where(fips_statement).values(visited=True, year=year)
         self.conn.execute(county_update)
+        self.conn.commit()
 
-    def set_visited_multiple(self, county_fips_ids: list):
+    def set_visited_multiple_counties(self, county_fips_ids: list):
         # Check that the fips is in the table
+        raise NotImplementedError("Need to update")
 
         fips_statement = self.counties.c.fips.in_(tuple(county_fips_ids))
         exists = select(self.counties.c).where(fips_statement)
@@ -123,6 +146,31 @@ class locationDB:
         # # Set the data
         county_update = self.counties.update().where(fips_statement).values(visited=True)
         self.conn.execute(county_update)
+
+    def unset_all_points(self):
+        query = self.positions.update() \
+                    .values(county_processed = False)
+        self.conn.execute(query)
+        self.conn.commit()
+
+    def set_point_county_processed(self, position_id: int):
+        # Set the value of 'county_processed' in the positions 
+        # table for a point with position_id
+        assert type(position_id) in [int, np.int32, np.int64]
+        position_id = int(position_id)
+        print(position_id, type(position_id))
+
+        exists = select(self.positions.c.id).where(self.positions.c.id == position_id )
+        result = self.conn.execute(exists)
+        data = result.fetchall()
+        print(data[-10:])
+
+        query = self.positions.update() \
+            .where(self.positions.c.id == position_id) \
+            .values(county_processed = True)
+        self.conn.execute(query)
+        self.conn.commit()
+
 
     def get_num_visited(self):
         visited = select(self.counties.c).where(self.counties.c.visited == True)
@@ -189,6 +237,10 @@ class locationDB:
 
     def delete_by_id(self, data_id: int):
 
+        
+        assert type(data_id) in [int, np.int32, np.int64]
+        data_id = int(data_id)
+
         pc = self.positions.c
         d_query = self.positions.delete().where(pc.id == data_id)
 
@@ -220,7 +272,6 @@ class locationDB:
         data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc'])
 
         return data
-
 
     def insert_location(self, location_dict: dict):
 
@@ -300,8 +351,8 @@ if __name__ == "__main__":
     item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
     # Get number of populated counties
     print(item.get_num_visited())
-    # item.set_visited('37113')
-    # item.set_visited_multiple(['37113', '37111', '37101'])
+    # item.set_visited_county('37113')
+    # item.set_visited_multiple_counties(['37113', '37111', '37101'])
     # print(item.get_num_visited())
 
 
