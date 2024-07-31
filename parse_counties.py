@@ -26,13 +26,13 @@ database = location_db.locationDB(db_name=config.database_location, fips_file = 
 # performant SQL query that will find the row with the 
 # minimum UTC time difference, I'll do it with 
 # fetching all the data once and using numpy. 
-# database.unset_all_points()
+database.unset_all_points()
 alldata = database.retrieve_all_data()
 
 # Get points where county_proc is null or False.
 unprocessed_data = alldata[alldata.county_proc.isnull() | alldata.county_proc == False]
 print(f"There are {len(unprocessed_data)} unprocessed points.")
-data = unprocessed_data[:10000]
+# data = unprocessed_data[:10000]
 
 # This is used to find the previous point sequentially in the
 # database. 
@@ -44,10 +44,10 @@ county_ids = set()
 last_county = None
 last_point_year = None
 
-for didx in tqdm(range(0, len(data))):
+for didx in tqdm(range(0, len(unprocessed_data))):
 
     # Get relevant data from the row
-    id0, date0, utc0, lat0, lon0, _ = data.iloc[didx]
+    id0, date0, utc0, lat0, lon0, _ = unprocessed_data.iloc[didx]
     # Find the closest index. 
     # Diff between this point's time and every other
     # time point in the database
@@ -111,6 +111,8 @@ for didx in tqdm(range(0, len(data))):
             last_county = in_county
             last_point_year = date0.year
             print("New county! ", in_county['NAME'],  in_county['STATE'])
+            new_county_pair = (str(last_county['GEO_ID'].item()), last_point_year)
+            database.set_visited_county(new_county_pair)
 
         # Normal processing relative to last_county
         in_county = last_county['geometry'].contains(qpt)

@@ -1,6 +1,6 @@
 # Using graph_objects
 
-from flask import Flask, render_template
+from flask import Flask, render_template, Response
 import pandas as pd
 import json
 import plotly
@@ -16,77 +16,93 @@ from plotly import utils
 from json import dumps
 import time
 import config
-import geojson
 import geopandas as gpd
 import re
+import location_db
+from flask_classful import FlaskView, route
 
 app = Flask(__name__)
 
-@app.route('/')
-def notdash():
+class FlaskApp(FlaskView):
+
+    def __init__(self):
+        super(FlaskApp, self).__init__()
+        
+
+        with open(config.basic_county_json, 'rb') as geodata:
+            self.counties = json.load(geodata)
+
+        # Edit GEO_ID field to remove the leading values
+        for cc in range(len(self.counties['features'])):
+            self.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', self.counties['features'][cc]['properties']['GEO_ID'])
+
+        self.database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+
+        self.template = None
+        self._precompute_graph()
 
 
-    s = time.time()
-    with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
-        cc = json.load(response)
-        print(cc)
-    # Load the json file with county coordinates
-    counties = gpd.read_file(config.basic_county_json, encoding='latin1')
-    ID_FIELD="GEO_ID"
-    counties[ID_FIELD] = [re.sub(r'0500000US', '', str(x)) for x in counties[ID_FIELD]]
-    print(counties)
-    print(time.time() - s)
+    def _precompute_graph(self):
 
-    tsfile = 'time_series_covid19_confirmed_US.csv'
-    tsurl = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/' + tsfile
+        ts = self.database.get_county_visits_dataframe()
 
-    if not os.path.exists(tsfile):
-        req = requests.get(tsurl)
-        with open(tsfile, 'wb') as f:
-            f.write(req.content)
-    ts = pd.read_csv(tsfile)
-    print(time.time() - s)
+        fig = px.choropleth(ts, geojson=self.counties, locations="FIPS", color='year',
+                                   color_continuous_scale="Viridis",
+                                   # range_color=(dmin, dmax),
+                                   scope="usa"
+                                  )
 
-    ts.dropna(inplace=True)
-    ts = ts[ts['FIPS'] < 80000].copy(deep=True)
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
 
-    ts_short = ts[['FIPS', '5/9/20', '5/10/20']].copy(deep=True)
-    ts_short['delta'] = np.abs(ts_short['5/10/20'] - ts_short['5/9/20'])
-    ts_short = ts_short[ts_short['delta'] >= 0].copy(deep=True)
-    dmin = ts_short['5/10/20'].min()
-    dmax = ts_short['5/10/20'].max()
-    ts_short.FIPS = ts_short.FIPS.apply(int)
-    ts_short.FIPS = ts_short.FIPS.apply(str)
-    ts_short['FIPS'] = ts_short['FIPS'].str.zfill(5)
-    print(time.time() - s)
-    print(ts_short)
+        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)   
+
+        self.template = graphJSON
+
+    @route('/counties')
+    def county_idx(self):
+    # http://localhost:5000/
+        while self.template is None:
+            time.sleep(0.25)
+        return render_template('notdash.html', graphJSON=self.template)
+        # return "<h1>This is my indexpage2</h1>"
+
+FlaskApp.register(app,route_base = '/')        
+
+# class FlaskApp(object):
+#     """docstring for FlaskApp"""
+
+#     app = None 
+
+#     def __init__(self):
+#         super(FlaskApp, self).__init__()
+        
+
+#         with open(config.basic_county_json, 'rb') as geodata:
+#             self.counties = json.load(geodata)
+
+#         # Edit GEO_ID field to remove the leading values
+#         for cc in range(len(self.counties['features'])):
+#             self.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', self.counties['features'][cc]['properties']['GEO_ID'])
+
+#         self.app = Flask(__name__)
+#         self.add_endpoint(endpoint='/', handler=self.notdash, endpoint_name='county')
+#         self.app.run(debug=True, port=8080, host='0.0.0.0')
+#         self.template = None
+#         self.precompute_graph()
+
+    # def add_endpoint(self, endpoint=None, endpoint_name=None, handler=None):
+    #         self.app.add_url_rule(endpoint, endpoint_name, EndpointAction(handler))
 
 
-    fig = px.choropleth(ts_short, geojson=counties, locations="FIPS", color='5/10/20',
-                               color_continuous_scale="Viridis",
-                               range_color=(dmin, dmax),
-                               scope="usa"
-                              )
 
-    fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
-    print(time.time() - s)
+    # @self.app.route('/')
+    # def notdash(self):
 
-
-    # df = pd.DataFrame({
-    #   'Fruit': ['Apples', 'Oranges', 'Bananas', 'Apples', 'Oranges', 
-    #   'Bananas'],
-    #   'Amount': [4, 1, 2, 2, 4, 5],
-    #   'City': ['SF', 'SF', 'SF', 'Montreal', 'Montreal', 'Montreal']
-    # })   
-    # fig = px.bar(df, x='Fruit', y='Amount', color='City', 
-    #   barmode='group')   
-    # graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)   
-    graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)   
-    print(time.time() - s)
-    return render_template('notdash.html', graphJSON=graphJSON)
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080, host='0.0.0.0')
+#     app = FlaskApp()
+    
 
 # fig.show()
 

@@ -11,5 +11,6 @@ database_location = 'location2.sqlite'
 detailed_county_json = os.path.join(config_dir, 'gz_counties_detailed.json')
 medium_county_json = os.path.join(config_dir, 'gz_counties_medium.json')
 basic_county_json = os.path.join(config_dir, 'gz_counties_basic.json')
+state_json = os.path.join(config_dir, 'us-states.json')
 
 county_fips_file = os.path.join(config_dir, 'state_and_county_fips_master.csv')

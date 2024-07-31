@@ -14,10 +14,9 @@ import geopandas as gpd
 
 # d = gpd.read_file(config.basic_county_json, encoding='latin1')
 # d2 = gpd.read_file(config.county_geojson, encoding='latin1')
-# exit()
-with open(config.basic_county_json, 'rb') as geodata:
-    counties = json.load(geodata)
-
+# # exit()
+# with open(config.state_json, 'rb') as geodata:
+#     counties = json.load(geodata)
     # , encoding="ISO-8859-1")
 
 # # with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
@@ -30,33 +29,31 @@ with open(config.basic_county_json, 'rb') as geodata:
 # print(counties2['features'][0])
 # exit()
 
-tsfile = 'time_series_covid19_confirmed_US.csv'
-tsurl = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/' + tsfile
+# tsfile = 'time_series_covid19_confirmed_US.csv'
+# tsurl = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/' + tsfile
 
-if not os.path.exists(tsfile):
-    req = requests.get(tsurl)
-    with open(tsfile, 'wb') as f:
-        f.write(req.content)
-ts = pd.read_csv(tsfile)
+# if not os.path.exists(tsfile):
+#     req = requests.get(tsurl)
+#     with open(tsfile, 'wb') as f:
+#         f.write(req.content)
+# ts = pd.read_csv(tsfile)
 
-ts.dropna(inplace=True)
-ts = ts[ts['FIPS'] < 80000].copy(deep=True)
+# ts.dropna(inplace=True)
+# ts = ts[ts['FIPS'] < 80000].copy(deep=True)
 
-ts_short = ts[['FIPS', '5/9/20', '5/10/20']].copy(deep=True)
-ts_short['delta'] = np.abs(ts_short['5/10/20'] - ts_short['5/9/20'])
-ts_short = ts_short[ts_short['delta'] >= 0].copy(deep=True)
-dmin = ts_short['5/10/20'].min()
-dmax = ts_short['5/10/20'].max()
-ts_short.FIPS = ts_short.FIPS.apply(int)
-ts_short.FIPS = ts_short.FIPS.apply(str)
-ts_short['FIPS'] = ts_short['FIPS'].str.zfill(5)
+# ts_short = ts[['FIPS', '5/9/20', '5/10/20']].copy(deep=True)
+# ts_short['delta'] = np.abs(ts_short['5/10/20'] - ts_short['5/9/20'])
+# ts_short = ts_short[ts_short['delta'] >= 0].copy(deep=True)
+# dmin = ts_short['5/10/20'].min()
+# dmax = ts_short['5/10/20'].max()
+# ts_short.FIPS = ts_short.FIPS.apply(int)
+# ts_short.FIPS = ts_short.FIPS.apply(str)
+# ts_short['FIPS'] = ts_short['FIPS'].str.zfill(5)
 
 
-fig = px.choropleth(ts_short, geojson=counties, locations='FIPS', color='5/10/20',
-                           color_continuous_scale="Viridis",
-                           range_color=(dmin, dmax),
-                           scope="usa"
-                          )
+# fig = px.choropleth(ts_short, geojson=counties, scope="usa"
+#                           )
+fig = px.choropleth(locations=["CA", "TX", "NY"], locationmode="USA-states", color=[1,2,3], scope="usa")
 
 fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
 

@@ -1,4 +1,5 @@
 flask-cors
+flask_classful
 flask-googlemaps
 flask-login
 flask-sqlalchemy

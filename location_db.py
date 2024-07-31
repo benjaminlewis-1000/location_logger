@@ -160,7 +160,7 @@ class locationDB:
         self.conn.commit()
 
         query_cty = self.counties.update() \
-                    .values(visited = False)
+                    .values(visited = False, year=-1)
         self.conn.execute(query_cty)
         self.conn.commit()
 
@@ -181,11 +181,40 @@ class locationDB:
         self.conn.commit()
 
 
-    def get_num_visited(self):
+    def get_num_counties_visited(self):
         visited = select(self.counties.c).where(self.counties.c.visited == True)
         result = self.conn.execute(visited)
         result = result.fetchall()
         return len(result)
+
+    def get_county_visits_dataframe(self):
+        county_data = select(self.counties.c.fips, self.counties.c.visited, self.counties.c.year)
+        result = self.conn.execute(county_data)
+        result = result.fetchall()
+        result = pd.DataFrame(result, columns=['FIPS', 'visited', 'year'])
+        # result.year = pd.to_numeric(result.year)
+
+        pos_idcs = result['year'] > 0
+        neg_idcs = result['year'] < 0
+        min_year = int(np.min(result[pos_idcs].year))
+        max_year = int(np.max(result[pos_idcs].year))
+        result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - min_year + (max_year - min_year) // 4)
+
+        return result
+
+    def get_state_visits_dataframe(self):
+        state_data = select(self.counties.c.state, self.counties.c.visited, self.counties.c.year)
+        result = self.conn.execute(state_data)
+        result = result.fetchall()
+        result = pd.DataFrame(result, columns=['state', 'visited', 'year'])
+        # Sort smallest to largest year
+        result = result.sort_values(by='year')
+        # Drop duplicates of states, keep the last column (e.g. the latest
+        # year visited to that state.)
+        # Easier to do in pandas than to try and get in SQL for me.
+        result = result.drop_duplicates(subset=['state'], keep='last')
+
+        return result
 
 
     def get_user_id(self, name):
@@ -359,7 +388,7 @@ if __name__ == "__main__":
 
     item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
     # Get number of populated counties
-    print(item.get_num_visited())
+    print(item.get_num_counties_visited())
     # item.set_visited_county('37113')
     # item.set_visited_multiple_counties(['37113', '37111', '37101'])
     # print(item.get_num_visited())
@@ -392,10 +421,16 @@ if __name__ == "__main__":
     item.insert_location(pos_data)
     print(item.retrieve_points(start_utc = ts-1, end_utc = ts+10))
 
-    county_pair = ('0500000US13265', 2016)
-    county_pair2 = ('0500000US13265', 2012)
-    item.set_visited_county(county_pair)
-    item.set_visited_county(county_pair2)
+    # county_pair = ('0500000US13265', 2016)
+    # county_pair2 = ('0500000US13265', 2012)
+    # item.set_visited_county(county_pair)
+    # item.set_visited_county(county_pair2)
+
+    dd = item.get_county_visits_dataframe()
+    result = item.get_state_visits_dataframe()
+    print(result)
+
+    print(item.get_num_counties_visited())
 
     # import requests
 
