@@ -26,7 +26,7 @@ database = location_db.locationDB(db_name=config.database_location, fips_file = 
 # performant SQL query that will find the row with the 
 # minimum UTC time difference, I'll do it with 
 # fetching all the data once and using numpy. 
-database.unset_all_points()
+# database.unset_all_points()
 alldata = database.retrieve_all_data()
 
 # Get points where county_proc is null or False.
