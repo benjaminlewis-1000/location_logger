@@ -197,9 +197,10 @@ class locationDB:
         pos_idcs = result['year'] > 0
         neg_idcs = result['year'] < 0
         base_year = 2000
-        min_year = int(np.min(result[pos_idcs].year))
-        max_year = int(np.max(result[pos_idcs].year))
-        result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
+        if len(result) > 0:
+            min_year = int(np.min(result[pos_idcs].year))
+            max_year = int(np.max(result[pos_idcs].year))
+            result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
 
         return result
 
