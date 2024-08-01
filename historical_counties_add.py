@@ -35,10 +35,10 @@ files = [('boulder.gpx', 2015),
          ('orlando_1.gpx', 2002),
          ('orlando_2.gpx', 2002),
          ('orlando_3.gpx', 2002),
-         ('reno_sunnyvale.gpx', 2012),
+         ('reno_sf.gpx', 2012),
          ('pvu_abq1.gpx', 2014),
          ('pvu_abq2.gpx', 2014),
-         ('pvu_reno.gpx', 2012)
+         ('pvu_reno.gpx', 2012),
          ('pvu_lagrande.gpx', 2013),
          ('reno_sf.gpx', 2012),
          ('rexburg_provo.gpx', 2013),
@@ -54,7 +54,7 @@ files = [('boulder.gpx', 2015),
          ('tuscon.gpx', 2014)]
 
 last_county = None
-print(database.get_num_visited())
+print(database.get_num_counties_visited())
 
 for ff in files:
     fname = os.path.join(root_dir, ff[0])

@@ -153,16 +153,16 @@ class locationDB:
         county_update = self.counties.update().where(fips_statement).values(visited=True)
         self.conn.execute(county_update)
 
-    def unset_all_points(self):
-        query = self.positions.update() \
-                    .values(county_processed = False)
-        self.conn.execute(query)
-        self.conn.commit()
+    # def unset_all_points(self):
+    #     query = self.positions.update() \
+    #                 .values(county_processed = False)
+    #     self.conn.execute(query)
+    #     self.conn.commit()
 
-        query_cty = self.counties.update() \
-                    .values(visited = False, year=-1)
-        self.conn.execute(query_cty)
-        self.conn.commit()
+    #     query_cty = self.counties.update() \
+    #                 .values(visited = False, year=-1)
+    #     self.conn.execute(query_cty)
+    #     self.conn.commit()
 
     def set_point_county_processed(self, position_id: int):
         # Set the value of 'county_processed' in the positions 
@@ -196,9 +196,10 @@ class locationDB:
 
         pos_idcs = result['year'] > 0
         neg_idcs = result['year'] < 0
+        base_year = 2000
         min_year = int(np.min(result[pos_idcs].year))
         max_year = int(np.max(result[pos_idcs].year))
-        result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - min_year + (max_year - min_year) // 4)
+        result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
 
         return result
 

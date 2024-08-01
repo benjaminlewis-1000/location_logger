@@ -1,24 +1,50 @@
 <!doctype html>
 <html>
  <body>
-  <h1>Hello Plotly (but not Dash yet)</h1>
+  <h1>{{title}}</h1>
   <div id='chart' class='chart'></div>
-</body><script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
+</body>
+<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
 <script type='text/javascript'>
+
   var graphs = {{graphJSON | safe}};
-  var layout = {
-      autosize: false,
-      width: 500,
-      height: 500,
-      margin: {
-        l: 50,
-        r: 50,
-        b: 100,
-        t: 100,
-        pad: 4
-      },
-      paper_bgcolor: '#7f7f7f',
-      plot_bgcolor: '#c7c7c7'
-    };
-  Plotly.newPlot('chart',graphs,layout);
+  var trace1 = {
+    type: 'bar',
+    x: [1, 2, 3, 4],
+    y: [5, 10, 2, 8],
+    marker: {
+        color: '#C8A2C8',
+        line: {
+            width: 2.5
+        }
+    }
+  };
+
+  var data = [ trace1 ];
+
+  var layout = { 
+    title: 'Responsive to window\'s size!',
+    font: {size: 18}
+  };
+
+  var config = {responsive: true}
+
+  Plotly.newPlot('chart', graphs, layout, config );
+
+
+  // var layout = {
+  //     autosize: true,
+  //     width: 500,
+  //     height: 500,
+  //     margin: {
+  //       l: 50,
+  //       r: 50,
+  //       b: 100,
+  //       t: 100,
+  //       pad: 4
+  //     },
+  //     paper_bgcolor: '#7f7f7f',
+  //     plot_bgcolor: '#c7c7c7'
+  //   };
+  // Plotly.newPlot('chart',graphs,layout);
 </script></html>

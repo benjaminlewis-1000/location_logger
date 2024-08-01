@@ -1,4 +1,5 @@
 flask-cors
+python-dotenv
 flask_classful
 flask-googlemaps
 flask-login

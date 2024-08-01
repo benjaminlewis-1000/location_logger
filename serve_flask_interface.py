@@ -31,19 +31,19 @@ import config
 # USGS Elevation Point Query Service
 url = r'https://nationalmap.gov/epqs/pqs.php?'
 
-def elevation_function(lat, lon):
+# def elevation_function(lat, lon):
 
-    # define rest query params
-    params = {
-        'output': 'json',
-        'x': lon,
-        'y': lat,
-        'units': 'Meters'
-    }
+#     # define rest query params
+#     params = {
+#         'output': 'json',
+#         'x': lon,
+#         'y': lat,
+#         'units': 'Meters'
+#     }
 
-    # format query string and return query value
-    result = requests.get((url + urllib.parse.urlencode(params)))
-    return result.json()['USGS_Elevation_Point_Query_Service']['Elevation_Query']['Elevation']
+#     # format query string and return query value
+#     result = requests.get((url + urllib.parse.urlencode(params)))
+#     return result.json()['USGS_Elevation_Point_Query_Service']['Elevation_Query']['Elevation']
 
 
 database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
