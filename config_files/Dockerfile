@@ -35,6 +35,6 @@ ADD config_files/cronjob.sh /etc/periodic/15min/cronjob.sh
 RUN chmod a+x /etc/periodic/15min/cronjob.sh
 
 ADD config_files/startup.sh /project
-RUN apt install procps bash-completion -y
+RUN apt install procps bash-completion cron -y
 
 RUN rm -rf /var/lib/apt/lists/* && apt clean

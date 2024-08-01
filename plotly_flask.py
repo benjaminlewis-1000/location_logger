@@ -54,27 +54,14 @@ class FlaskApp(FlaskView):
 
         self.colorscale = plotly.colors.sequential.Viridis
         self.colorscale = self.colorscale[::-1]
-        self.colorscale[0] = '#ffeae8'
+        self.colorscale_county = self.colorscale.copy()
+        self.colorscale_county[0] = '#ffeae8'
 
         self.template = None
+        self.num_counties_visited = 0
         self._precompute_graph()
 
-
-    def _precompute_graph(self):
-
-        self.template = None
-
-        county_df = self.database.get_county_visits_dataframe()
-        # print(county_df)
-        self.num_counties_visited = int(county_df.visited.sum())
-
-
-        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS", color='year',
-                                   color_continuous_scale=self.colorscale,
-                                   # range_color=(dmin, dmax),
-                                   scope="usa"
-                                  )
-
+    def set_map_layout(self, fig):
 
         fig.update_layout(
                 autosize=True,
@@ -92,7 +79,26 @@ class FlaskApp(FlaskView):
                     height=800,
             )
 
-        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)   
+
+        return fig
+
+    def _precompute_graph(self):
+
+        self.template = None
+
+        county_df = self.database.get_county_visits_dataframe()
+        # print(county_df)
+        self.num_counties_visited = int(county_df.visited.sum())
+
+
+        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS", color='year',
+                                   color_continuous_scale=self.colorscale_county,
+                                   # range_color=(dmin, dmax),
+                                   scope="usa"
+                                  )
+        fig = self.set_map_layout(fig)
+
+        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
         self.template = graphJSON
 
@@ -101,26 +107,38 @@ class FlaskApp(FlaskView):
 
         # Check whether the precomputed graph is up to date.
         num_visited = self.database.get_num_counties_visited()
-        if num_visited != self.num_counties_visited:
+        if num_visited != self.num_counties_visited or self.template is None:
             # Kick it off again.
             print("Recomputing")
             self._precompute_graph()
 
         while self.template is None:
             time.sleep(0.25)
-        layout = json.dumps({'margin': dict(l=0, r=0, t=50, b=0)})
-        return render_template('notdash.html', layout=layout, graphJSON=self.template, title='Visited Counties')
+
+        return render_template('notdash.html', graphJSON=self.template, title='Visited Counties')
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/states')
     def serve_state_graph(self):
+        print("State")
 
-        raise NotImplementedError()
-        fig = px.choropleth(locations=["CA", "TX", "NY"], locationmode="USA-states", color=[1,2,3], scope="usa")
+        df = self.database.get_state_visits_dataframe()
 
-        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+        visited = df[df.visited]
+        visit_states = visited.state.tolist()
+        visit_year = visited.year.tolist()
 
-        fig.show()
+        fig = px.choropleth(locations=visit_states, locationmode="USA-states", 
+                    color=visit_year,
+                    color_continuous_scale=self.colorscale,
+                    scope="usa")
+
+        fig = self.set_map_layout(fig)
+
+        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+
+        return render_template('notdash.html', graphJSON=graphJSON, title='Visited States')
+
 
     @route('/log', methods=['GET', 'POST'])
     # https://owntracks.exploretheworld.tech/log
