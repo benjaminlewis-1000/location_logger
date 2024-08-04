@@ -1,16 +1,19 @@
-from sqlalchemy import create_engine, text
-import re
-from sqlalchemy_utils import database_exists, create_database
-from sqlalchemy.sql import select
-import sqlalchemy
-import csv
+#! /usr/bin/env python
+
+from datetime import datetime
+from sqlalchemy import create_engine, text, func
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float, Boolean
-import pandas as pd
+from sqlalchemy.sql import select
+from sqlalchemy_utils import database_exists, create_database
+import csv
+import dateutil
+import dateutil.parser
 import math
 import numpy as np
-from datetime import datetime
-import dateutil.parser
-import dateutil
+import pandas as pd
+import re
+import sqlalchemy
+import time
 
 class locationDB:
     """docstring for locationDB"""
@@ -153,16 +156,24 @@ class locationDB:
         county_update = self.counties.update().where(fips_statement).values(visited=True)
         self.conn.execute(county_update)
 
-    # def unset_all_points(self):
-    #     query = self.positions.update() \
-    #                 .values(county_processed = False)
-    #     self.conn.execute(query)
-    #     self.conn.commit()
+    def unset_all_points(self):
+        query = self.positions.update() \
+                    .values(county_processed = False)
+        self.conn.execute(query)
+        self.conn.commit()
 
-    #     query_cty = self.counties.update() \
-    #                 .values(visited = False, year=-1)
-    #     self.conn.execute(query_cty)
-    #     self.conn.commit()
+        query_cty = self.counties.update() \
+                    .values(visited = False, year=-1)
+        self.conn.execute(query_cty)
+        self.conn.commit()
+
+    def unset_county_by_fips(self, fips: str):
+        assert type(fips) == str
+
+        fips_statement = self.counties.c.fips == fips
+        county_update = self.counties.update().where(fips_statement).values(visited=False, year=-1)
+        self.conn.execute(county_update)
+        self.conn.commit()
 
     def set_point_county_processed(self, position_id: int):
         # Set the value of 'county_processed' in the positions 
@@ -187,6 +198,64 @@ class locationDB:
         result = result.fetchall()
         return len(result)
 
+    def get_last_visit_year(self):
+        visited = select(self.counties.c.year).where(self.counties.c.visited == True)
+        result = self.conn.execute(visited)
+        result = result.fetchall()
+        print(result)
+        if result is None or len(result) == 0:
+            return -1
+        return int(np.max(result))
+
+    def get_points_to_parse_dataframe(self, start_utc = None):
+
+        pc = self.positions.c
+
+        if start_utc is not None:
+            min_unproc_qry = select(pc.utc_time) \
+                .where(pc.county_processed == False) \
+                .where(pc.utc_time > start_utc) \
+                .order_by(pc.utc_time.asc())
+        else:
+            min_unproc_qry = select(pc.utc_time) \
+                .where(pc.county_processed == False) \
+                .order_by(pc.utc_time.asc())
+        data = self.conn.execute(min_unproc_qry)
+
+        min_unprocessed = data.fetchone()
+        print(min_unprocessed)
+        if min_unprocessed is None or len(min_unprocessed) == 0:
+            return None
+        else:
+            min_unprocessed = min_unprocessed[0]
+        # Then get the maximum utc time that's lower
+        # than that
+        max_cmp_qry = select(func.max(pc.utc_time)) \
+            .where(pc.utc_time < min_unprocessed) 
+        data = self.conn.execute(max_cmp_qry)
+
+        max_cmp = data.fetchone()
+        print(max_cmp)
+        if max_cmp is not None:# len(max_cmp) > 0:
+            max_cmp = max_cmp[0] - 1
+        else:
+            max_cmp = 0
+
+        print('unproc/cmpr', min_unprocessed, max_cmp)
+        assert max_cmp < min_unprocessed
+        # data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc'])
+
+        relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.county_processed, pc.accuracy) \
+            .where(pc.utc_time >= max_cmp) \
+            .order_by(pc.utc_time.asc())
+        data = self.conn.execute(relevant_data_query)
+
+        data = data.fetchall()
+        data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc', 'accuracy'])
+
+        return data
+
+
     def get_county_visits_dataframe(self):
         county_data = select(self.counties.c.fips, self.counties.c.visited, self.counties.c.year)
         result = self.conn.execute(county_data)
@@ -197,9 +266,11 @@ class locationDB:
         pos_idcs = result['year'] > 0
         neg_idcs = result['year'] < 0
         base_year = 2000
-        min_year = int(np.min(result[pos_idcs].year))
-        max_year = int(np.max(result[pos_idcs].year))
-        result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
+        num_visited = len(np.where(pos_idcs == True)[0])
+        if num_visited > 0:
+            min_year = int(np.min(result[pos_idcs].year))
+            max_year = int(np.max(result[pos_idcs].year))
+            result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
 
         return result
 
@@ -385,42 +456,62 @@ class locationDB:
 
         return start, specific
 
+
+
+    def get_debug_subset(self, min_time = 1721782342, max_time = 1721793142):
+
+        pc = self.positions.c
+
+        debug_qry = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.county_processed) \
+            .where(pc.utc_time >= min_time) \
+            .where(pc.utc_time <= max_time) \
+            .order_by(pc.utc_time.asc())
+        data = self.conn.execute(debug_qry)
+
+        data = data.fetchall()
+        data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc'])
+
+        return data
+
 if __name__ == "__main__":
 
-    item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
+    import config
+    # item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
+    item = locationDB(db_name = config.database_location, fips_file = 'config_files/state_and_county_fips_master.csv')
     # Get number of populated counties
     print(item.get_num_counties_visited())
+    print(item.get_last_visit_year())
     # item.set_visited_county('37113')
     # item.set_visited_multiple_counties(['37113', '37111', '37101'])
     # print(item.get_num_visited())
 
 
-    ts = 1721917990
-    pos_data = {}
-    cur_datetime = datetime.utcfromtimestamp(int(ts))
-    pos_data['utc'] = ts
-    pos_data['lat'] = 0
-    pos_data['lon'] = 0
-    pos_data['battery'] = -1
-    pos_data['accuracy'] = 25
-    pos_data['date'] = cur_datetime
-    pos_data['dev_id'] = 'ben'
-    pos_data['speed'] = 0
-    pos_data['altitude'] = float(255)
+    # ts = 1721917990
+    # pos_data = {}
+    # cur_datetime = datetime.utcfromtimestamp(int(ts))
+    # pos_data['utc'] = ts
+    # pos_data['lat'] = 0
+    # pos_data['lon'] = 0
+    # pos_data['battery'] = -1
+    # pos_data['accuracy'] = 25
+    # pos_data['date'] = cur_datetime
+    # pos_data['dev_id'] = 'ben'
+    # pos_data['speed'] = 0
+    # pos_data['altitude'] = float(255)
         
-    pos_data['source'] = 'gps_logger'
+    # pos_data['source'] = 'gps_logger'
 
-    print(item.insert_location(pos_data))
-    data = item.retrieve_points(start_utc = ts-1, end_utc = ts+1)
-    print(data)
-    item.delete_by_id(1)
-    data = item.retrieve_points(start_utc = ts-1, end_utc = ts+1)
-    print(data)
+    # print(item.insert_location(pos_data))
+    # data = item.retrieve_points(start_utc = ts-1, end_utc = ts+1)
+    # print(data)
+    # item.delete_by_id(1)
+    # data = item.retrieve_points(start_utc = ts-1, end_utc = ts+1)
+    # print(data)
 
-    item.insert_location(pos_data)
-    pos_data['utc'] = ts + 1
-    item.insert_location(pos_data)
-    print(item.retrieve_points(start_utc = ts-1, end_utc = ts+10))
+    # item.insert_location(pos_data)
+    # pos_data['utc'] = ts + 1
+    # item.insert_location(pos_data)
+    # print(item.retrieve_points(start_utc = ts-1, end_utc = ts+10))
 
     # county_pair = ('0500000US13265', 2016)
     # county_pair2 = ('0500000US13265', 2012)
@@ -433,6 +524,11 @@ if __name__ == "__main__":
 
     print(item.get_num_counties_visited())
 
+    s = time.time()
+    data = item.get_points_to_parse_dataframe()
+    print(time.time() - s)
+
+    debug = item.get_debug_subset()
     # import requests
 
     # response = requests.post("https://owntracks.exploretheworld.tech/log", 

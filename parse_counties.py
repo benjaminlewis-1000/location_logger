@@ -26,8 +26,21 @@ database = location_db.locationDB(db_name=config.database_location, fips_file = 
 # performant SQL query that will find the row with the 
 # minimum UTC time difference, I'll do it with 
 # fetching all the data once and using numpy. 
-# database.unset_all_points()
-alldata = database.retrieve_all_data()
+database.unset_all_points()
+
+alldata = database.get_points_to_parse_dataframe(start_utc = 1718682342)
+if alldata is None:
+    exit()
+
+alldata['simple_speed'] = 999
+alldata['averaged_speed'] = 999
+# alldata = alldata
+
+
+# alldata = database.get_debug_subset()
+# alldata.county_proc = False
+# alldata.at[0, 'county_proc'] = True
+alldata = alldata[:10000]
 
 # Get points where county_proc is null or False.
 unprocessed_data = alldata[alldata.county_proc.isnull() | alldata.county_proc == False]
@@ -45,9 +58,10 @@ last_county = None
 last_point_year = None
 
 for didx in tqdm(range(0, len(unprocessed_data))):
+# for didx in range(0, len(unprocessed_data)):
 
     # Get relevant data from the row
-    id0, date0, utc0, lat0, lon0, _ = unprocessed_data.iloc[didx]
+    id0, date0, utc0, lat0, lon0, _, _, _, _ = unprocessed_data.iloc[didx]
     # Find the closest index. 
     # Diff between this point's time and every other
     # time point in the database
@@ -77,7 +91,7 @@ for didx in tqdm(range(0, len(unprocessed_data))):
 
     # And pick that data from that row. Then compute
     # the distance between the points and the speed. 
-    id1, date1, utc1, lat1, lon1, _ = closest_time_data
+    id1, date1, utc1, lat1, lon1, _, _, _, _ = closest_time_data
     considered_coord = (lat0, lon0) # data[didx][1], data[didx][2])
     coord2 = (lat1, lon1) # data[didx + 1][1], data[didx + 1][2])
     dist = geopy.distance.geodesic(considered_coord, coord2).m
@@ -92,59 +106,71 @@ for didx in tqdm(range(0, len(unprocessed_data))):
         continue
 
     speed = dist / timediff
-    if speed < 45: 
-    # 45 m/s ~= 100 mph. Faster than that is a plane, and I don't want to do those. 
+    unprocessed_data.at[didx, 'simple_speed']  = speed
 
-        # Because the point is lon/lat for geodata instead
-        # of lat/lon for geopy.distance, we reverse it. 
-        qpt = Point(map(float, considered_coord[::-1]))
+    # speeds.pop(0)
+    # speeds.append(speed)
+    # mean_spd = np.mean(speeds)
 
-        # Set a baseline for last_county.
-        if last_county is None:
-            in_county = geoData[geoData['geometry'].contains(qpt)]
-            assert len(in_county) == 1
+    # # print(speed, mean_spd, timediff, dist, closest_time_idx)
+    # if mean_spd < 45:
+    # # 45 m/s ~= 100 mph. Faster than that is a plane, and I don't want to do those. 
 
-            # Doesn't have a value
-            if len(in_county) == 0: # Not in a US county:
-                database.set_point_county_processed(id0)
-                continue
-            last_county = in_county
-            last_point_year = date0.year
-            print("New county! ", in_county['NAME'],  in_county['STATE'])
-            new_county_pair = (str(last_county['GEO_ID'].item()), last_point_year)
-            database.set_visited_county(new_county_pair)
+    #     # Because the point is lon/lat for geodata instead
+    #     # of lat/lon for geopy.distance, we reverse it. 
+    #     qpt = Point(map(float, considered_coord[::-1]))
 
-        # Normal processing relative to last_county
-        in_county = last_county['geometry'].contains(qpt)
-        this_year = date0.year
-        if in_county.item() and this_year == last_point_year:
-            database.set_point_county_processed(id0)
-        else:
-            # Figure out if it's a new year or a new county
-            if in_county.item():
-                # Then not the same year
-                assert this_year != last_point_year
-                new_county_pair = (str(last_county['GEO_ID'].item()), this_year)
-                # print("GEOID", last_county)
-                last_point_year = this_year
-                database.set_visited_county(new_county_pair)
-                database.set_point_county_processed(id0)
-            else:
-                # Figure out the new county 
-                new_county = geoData[geoData['geometry'].contains(qpt)]
-                assert len(new_county) == 1
-                # print("NC\n", new_county)
-                # print("Name_id", new_county['NAME'], new_county['GEO_ID'])
-                new_county_pair = (str(new_county['GEO_ID'].item()), this_year)
-                database.set_visited_county(new_county_pair)
-                database.set_point_county_processed(id0)
+    #     # Set a baseline for last_county.
+    #     if last_county is None:
+    #         in_county = geoData[geoData['geometry'].contains(qpt)]
+    #         # assert len(in_county) == 1
 
-                last_point_year = this_year
-                last_county = new_county
-                print("New county! ", new_county['NAME'],  new_county['STATE'])
+    #         # Doesn't have a value
+    #         if len(in_county) == 0: # Not in a US county:
+    #             database.set_point_county_processed(id0)
+    #             continue
+    #         last_county = in_county
+    #         last_point_year = date0.year
+    #         print("New county! ", in_county, date0)
+    #         new_county_pair = (str(last_county['GEO_ID'].item()), last_point_year)
+    #         database.set_visited_county(new_county_pair)
 
-    else:
-        # This point was too fast. 
-        database.set_point_county_processed(id0)
+    #     # Normal processing relative to last_county
+    #     in_county = last_county['geometry'].contains(qpt)
+    #     this_year = date0.year
+    #     if in_county.item() and this_year == last_point_year:
+    #         database.set_point_county_processed(id0)
+    #     else:
+    #         # Figure out if it's a new year or a new county
+    #         if in_county.item():
+    #             # Then not the same year
+    #             assert this_year != last_point_year
+    #             new_county_pair = (str(last_county['GEO_ID'].item()), this_year)
+    #             # print("GEOID", last_county)
+    #             last_point_year = this_year
+    #             database.set_visited_county(new_county_pair)
+    #             database.set_point_county_processed(id0)
+    #         else:
+    #             # Figure out the new county 
+    #             new_county = geoData[geoData['geometry'].contains(qpt)]
+    #             if len(new_county) == 0:
+    #             	database.set_point_county_processed(id0)
+    #             	continue
 
-print(database.get_num_visited(), 'counties visited')
+    #             assert len(new_county) == 1
+    #             # print("NC\n", new_county)
+    #             # print("Name_id", new_county['NAME'], new_county['GEO_ID'])
+    #             new_county_pair = (str(new_county['GEO_ID'].item()), this_year)
+    #             database.set_visited_county(new_county_pair)
+    #             database.set_point_county_processed(id0)
+
+    #             last_point_year = this_year
+    #             last_county = new_county
+    #             print("New county! \n", new_county, "\n", date0)
+
+    # else:
+    #     # This point was too fast.
+    #     # print("Not adding", date0) 
+    #     database.set_point_county_processed(id0)
+
+print(database.get_num_counties_visited(), 'counties visited')

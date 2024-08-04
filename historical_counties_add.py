@@ -11,10 +11,13 @@ from shapely.geometry import Point
 geoData = gpd.read_file(config.basic_county_json)
 # Set up a hook to the location database
 database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+# database.unset_all_points()
+# exit()
 
-root_dir = '/home/lewisbp/Downloads'
+root_dir = '/project/Downloads/historical_gpx'
 
-files = [('boulder.gpx', 2015),
+files = [
+        ('boulder.gpx', 2015),
          ('pvu_abq1.gpx', 2014),
          ('boise_seattle.gpx', 2011),
          ('boseman_yellowstone.gpx', 2013),
@@ -51,7 +54,15 @@ files = [('boulder.gpx', 2015),
          ('to_boston_p2.gpx', 2005),
          ('to_branson.gpx', 2004),
          ('trip_to_park_ca.gpx', 2012),
-         ('tuscon.gpx', 2014)]
+         ('tuscon.gpx', 2014),
+        ('to_chicago_2016.gpx', 2016),
+        ('to_palmyra.gpx', 2017),
+        ('raleigh_1.gpx', 2017),
+        ('raleigh_2.gpx', 2017),
+        ('raleigh_4.gpx', 2017),
+        ('raleigh_3.gpx', 2017),
+        ('nick_trip.gpx', 2014),
+        ]
 
 last_county = None
 print(database.get_num_counties_visited())
@@ -85,3 +96,25 @@ for ff in files:
             new_county_pair = (str(update_county['GEO_ID'].item()), year)
             database.set_visited_county(new_county_pair)
             last_county = update_county
+
+county_fips_list = [
+    ('04013', 2014),
+    ('49049', 2024),
+    ('49035', 2000),
+    ('32017', 2015),
+    ]
+
+for fip_pair in county_fips_list:
+    database.set_visited_county(fip_pair)
+
+# unset_fips_list = [
+# # '45051', '45067', '45033', '45041','45031', '45069', \
+# # '37153', '37123', '37151', '37081', '37067', '37189', '37171'\
+# # 39141, 39079, 39053, 54053, 54079, 54019, 54081, 54055, 51021, 51197, 51035
+# 54039,  37169
+# ]
+
+# for fips in unset_fips_list:
+#     if type(fips) != str:
+#         fips = str(fips)
+#     database.unset_county_by_fips(fips)

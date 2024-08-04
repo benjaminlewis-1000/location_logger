@@ -58,7 +58,12 @@ class FlaskApp(FlaskView):
         self.colorscale_county[0] = '#ffeae8'
 
         self.template = None
+        self.compute_running = False
         self.num_counties_visited = 0
+        tmp = self.database.get_county_visits_dataframe()
+        self.num_counties = len(tmp)
+        self.max_county_year = self.database.get_last_visit_year()
+        del tmp
         self._precompute_graph()
 
     def set_map_layout(self, fig):
@@ -84,9 +89,12 @@ class FlaskApp(FlaskView):
 
     def _precompute_graph(self):
 
+        self.compute_running = True
         self.template = None
 
         county_df = self.database.get_county_visits_dataframe()
+        self.max_county_year = self.database.get_last_visit_year()
+        print("call")
         # print(county_df)
         self.num_counties_visited = int(county_df.visited.sum())
 
@@ -101,13 +109,16 @@ class FlaskApp(FlaskView):
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
         self.template = graphJSON
+        self.compute_running = False
 
     @route('/counties')
     def serve_county_graph(self):
 
         # Check whether the precomputed graph is up to date.
         num_visited = self.database.get_num_counties_visited()
-        if num_visited != self.num_counties_visited or self.template is None:
+        max_county_year = self.database.get_last_visit_year()
+
+        if not self.compute_running and (num_visited != self.num_counties_visited or max_county_year != self.max_county_year): # or self.template is None:
             # Kick it off again.
             print("Recomputing")
             self._precompute_graph()
@@ -115,16 +126,23 @@ class FlaskApp(FlaskView):
         while self.template is None:
             time.sleep(0.25)
 
-        return render_template('notdash.html', graphJSON=self.template, title='Visited Counties')
+        visited_string = f' - {num_visited}/{self.num_counties} | {num_visited / self.num_counties * 100:.2f}%'
+
+        return render_template('notdash.html', graphJSON=self.template, stat_string=visited_string, title='Visited Counties')
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/states')
     def serve_state_graph(self):
         print("State")
 
-        df = self.database.get_state_visits_dataframe()
+        state_df = self.database.get_state_visits_dataframe()
+        num_visited = len(state_df[state_df.visited == True])
 
-        visited = df[df.visited]
+        dc_visited = bool(state_df[state_df.state == 'DC'].visited.any())
+        if dc_visited:
+            num_visited -= 1
+            
+        visited = state_df[state_df.visited]
         visit_states = visited.state.tolist()
         visit_year = visited.year.tolist()
 
@@ -134,10 +152,11 @@ class FlaskApp(FlaskView):
                     scope="usa")
 
         fig = self.set_map_layout(fig)
+        visited_string = f' | {num_visited}/50 States{" & DC" if dc_visited else ""} Visited'
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-        return render_template('notdash.html', graphJSON=graphJSON, title='Visited States')
+        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited States')
 
 
     @route('/log', methods=['GET', 'POST'])
