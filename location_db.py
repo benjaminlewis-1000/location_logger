@@ -28,6 +28,7 @@ class locationDB:
         
         self.engine = create_engine(f"sqlite:///{db_name}", echo=False, future=True) 
         self.conn = self.engine.connect()
+        # self.conn.execution_options(preserve_rowcount=True)
         
         metadata = MetaData()
         self.counties = Table('counties', metadata,
@@ -111,6 +112,16 @@ class locationDB:
                 r = self.conn.execute(mkcounty)
         self.conn.commit()
 
+    def count_unprocessed_counties(self):
+        # Not sure I understand completely how
+        # the count statement works, but it does. 
+        query = select(self.positions).where(self.positions.c.county_processed == False)# .count() 
+        count_stmt = select(func.count("*")).select_from(
+            query.alias("s")
+        )
+        result = self.conn.execute(count_stmt).scalar()
+        return result
+
     def set_visited_county(self, county_year_tuple: tuple):
         # Check that the fips is in the table
 
@@ -155,6 +166,7 @@ class locationDB:
         # # Set the data
         county_update = self.counties.update().where(fips_statement).values(visited=True)
         self.conn.execute(county_update)
+        self.conn.commit()
 
     def unset_all_points(self):
         query = self.positions.update() \
@@ -191,6 +203,26 @@ class locationDB:
         self.conn.execute(query)
         self.conn.commit()
 
+    def set_pointlist_county_processed(self, position_list: list):
+        # Used to update points for frequently visited counties
+        assert type(position_list) == list
+
+        # Iterate over the list
+        start_idx = 0
+        num_per_iter = 5000
+        for i in range(len(position_list) // num_per_iter + 1):
+            start_idx = i * num_per_iter
+            end_idx = (i + 1) * num_per_iter
+            sublist = position_list[start_idx:end_idx]
+
+            ids_update = self.positions.c.id.in_(tuple(sublist))
+
+            update = self.positions.update() \
+                .where(ids_update).values(county_processed=True)
+
+            self.conn.execute(update)
+            self.conn.commit()
+            
 
     def get_num_counties_visited(self):
         visited = select(self.counties.c).where(self.counties.c.visited == True)
@@ -207,9 +239,13 @@ class locationDB:
             return -1
         return int(np.max(result))
 
-    def get_points_to_parse_dataframe(self, start_utc = None):
+    def get_points_to_parse_dataframe(self, start_utc = None, num_points = None):
 
         pc = self.positions.c
+
+        if num_points is not None:
+            if type(num_points) is not int or num_points <= 0:
+                raise ValueError("Num points must be a positive integer.")
 
         if start_utc is not None:
             min_unproc_qry = select(pc.utc_time) \
@@ -220,34 +256,42 @@ class locationDB:
             min_unproc_qry = select(pc.utc_time) \
                 .where(pc.county_processed == False) \
                 .order_by(pc.utc_time.asc())
-        data = self.conn.execute(min_unproc_qry)
 
+        data = self.conn.execute(min_unproc_qry)
+        
         min_unprocessed = data.fetchone()
-        print(min_unprocessed)
+        
         if min_unprocessed is None or len(min_unprocessed) == 0:
             return None
         else:
             min_unprocessed = min_unprocessed[0]
+
         # Then get the maximum utc time that's lower
-        # than that
-        max_cmp_qry = select(func.max(pc.utc_time)) \
-            .where(pc.utc_time < min_unprocessed) 
+        # than the minimum unprocessed value.
+        max_cmp_qry = select(pc.utc_time) \
+            .where(pc.utc_time < min_unprocessed) \
+            .order_by(pc.utc_time.desc()).limit(5)
+
         data = self.conn.execute(max_cmp_qry)
-
-        max_cmp = data.fetchone()
-        print(max_cmp)
-        if max_cmp is not None:# len(max_cmp) > 0:
-            max_cmp = max_cmp[0] - 1
+        all_data = data.fetchall()
+        if len(all_data) == 0:
+            min_cmp = 0
+            # max_cmp = 0
         else:
-            max_cmp = 0
+            min_cmp = np.min(all_data)
 
-        print('unproc/cmpr', min_unprocessed, max_cmp)
-        assert max_cmp < min_unprocessed
-        # data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc'])
+        # print('unproc/cmpr', min_unprocessed, min_cmp, min_unprocessed - min_cmp)
+        assert min_cmp <= min_unprocessed
 
+        # Query: All relevant data that is greater than that lower bound plus a few outliers.
         relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.county_processed, pc.accuracy) \
-            .where(pc.utc_time >= max_cmp) \
+            .where(pc.utc_time >= min_cmp) \
             .order_by(pc.utc_time.asc())
+
+        if num_points is not None:
+            # Limit the amount of data.
+            relevant_data_query = relevant_data_query.limit(num_points)
+            
         data = self.conn.execute(relevant_data_query)
 
         data = data.fetchall()
@@ -267,8 +311,13 @@ class locationDB:
         neg_idcs = result['year'] < 0
         base_year = 2000
 
-        if len(result) > 0:
-            
+        # print("PI", len(pos_idcs))
+        num_positive = len(np.where(pos_idcs)[0])
+        # print(len(num_true))
+        # print(pos_idcs)
+
+        if num_positive > 0:
+
             min_year = int(np.min(result[pos_idcs].year))
             max_year = int(np.max(result[pos_idcs].year))
             result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - base_year) # min_year + (max_year - min_year) // 4)
@@ -477,8 +526,8 @@ class locationDB:
 if __name__ == "__main__":
 
     import config
-    # item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
-    item = locationDB(db_name = config.database_location, fips_file = 'config_files/state_and_county_fips_master.csv')
+    item = locationDB(db_name = 'location.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
+    # item = locationDB(db_name = config.database_location, fips_file = 'config_files/state_and_county_fips_master.csv')
     # Get number of populated counties
     print(item.get_num_counties_visited())
     print(item.get_last_visit_year())
@@ -519,18 +568,21 @@ if __name__ == "__main__":
     # item.set_visited_county(county_pair)
     # item.set_visited_county(county_pair2)
 
-    dd = item.get_county_visits_dataframe()
-    result = item.get_state_visits_dataframe()
-    print(result)
+    # dd = item.get_county_visits_dataframe()
+    # result = item.get_state_visits_dataframe()
+    # print(result)
 
-    print(item.get_num_counties_visited())
+    # print(item.get_num_counties_visited())
 
     s = time.time()
-    data = item.get_points_to_parse_dataframe()
+    data = item.get_points_to_parse_dataframe(num_points=1203)
     print(time.time() - s)
 
     debug = item.get_debug_subset()
     # import requests
+
+    print("Unprocesseed")
+    print(item.count_unprocessed_counties())
 
     # response = requests.post("https://owntracks.exploretheworld.tech/log", 
     #     data="lat=0&lon=0&timestamp=0&acc=9999&spd=5")
