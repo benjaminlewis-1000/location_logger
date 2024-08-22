@@ -146,7 +146,7 @@ class FlaskApp(FlaskView):
         if country_add_success:
             return Response(response= jsonpickle.encode({'error': "None", 'success': True}), status=200, mimetype="application/json")
         else:
-            return Response(response= jsonpickle.encode({'error': 'Selected identifier was not found in database.', 'success': False}), status=400, mimetype="application/json")
+            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
 
     @route('/countries')
     def serve_country_graph(self):
@@ -492,8 +492,12 @@ class FlaskApp(FlaskView):
 
 
 
-print("Register")
-
+# This weird technique, and not having an
+# __init__ in the traditional sense, is because the
+# register function runs __init__ once for each route.
+# Solution is from flask_classful issues at
+# https://github.com/pallets-eco/flask-classful/issues/114
+# and is admittedly a hack but it works. 
 FlaskApp._initilization()
 FlaskApp.register(app,route_base = '/')
 
