@@ -15,6 +15,7 @@ basic_county_json = os.path.join(config_dir, 'gz_counties_basic.json')
 # state_json = os.path.join(config_dir, 'us-states.json')
 
 county_fips_file = os.path.join(config_dir, 'state_and_county_fips_master.csv')
+country_file = os.path.join(config_dir, 'countries.csv')
 
 # These won't capture the entire county, but are designed
 # to get the bulk of the points from the county.

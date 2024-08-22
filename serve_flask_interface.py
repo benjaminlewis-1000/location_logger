@@ -37,36 +37,41 @@ app.config['UPLOAD_FOLDER'] = "/data"
 GoogleMaps(app)
 
 class FlaskApp(FlaskView):
+    route_base = '/'
 
-    def __init__(self):
-        super(FlaskApp, self).__init__()
+    # def __init__(self):
+    @classmethod
+    def _initilization(cls):
+        # super(FlaskApp, self).__init__()
         
-
         with open(config.basic_county_json, 'rb') as geodata:
-            self.counties = json.load(geodata)
+            cls.counties = json.load(geodata)
 
         # Edit GEO_ID field to remove the leading values
-        for cc in range(len(self.counties['features'])):
-            self.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', self.counties['features'][cc]['properties']['GEO_ID'])
+        for cc in range(len(cls.counties['features'])):
+            cls.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', cls.counties['features'][cc]['properties']['GEO_ID'])
 
-        self.database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+        cls.database = location_db.locationDB(db_name=config.database_location, \
+                                    fips_file = config.county_fips_file, \
+                                    country_file=config.country_file)
 
 
-        self.colorscale = plotly.colors.sequential.Viridis
-        self.colorscale = self.colorscale[::-1]
-        self.colorscale_county = self.colorscale.copy()
-        self.colorscale_county[0] = '#ffeae8'
+        cls.colorscale = plotly.colors.sequential.Viridis
+        cls.colorscale = cls.colorscale[::-1]
+        cls.colorscale_county = cls.colorscale.copy()
+        cls.colorscale_county[0] = '#ffeae8'
 
-        self.template = None
-        self.compute_running = False
-        self.num_counties_visited = 0
-        tmp = self.database.get_county_visits_dataframe()
-        self.num_counties = len(tmp)
-        self.max_county_year = self.database.get_average_visit_year()
+        cls.template = None
+        cls.compute_running = False
+        cls.num_counties_visited = 0
+        tmp = cls.database.get_county_visits_dataframe()
+        cls.num_counties = len(tmp)
+        cls.avg_county_year = cls.database.get_average_visit_year()
         del tmp
-        self._precompute_graph()
+        print("Init")
+        # cls.__precompute_graph()
 
-    def set_map_layout(self, fig):
+    def __set_map_layout(self, fig):
 
         fig.update_layout(
                 autosize=True,
@@ -87,13 +92,13 @@ class FlaskApp(FlaskView):
 
         return fig
 
-    def _precompute_graph(self):
+    def __precompute_graph(self):
 
         self.compute_running = True
         self.template = None
 
         county_df = self.database.get_county_visits_dataframe()
-        self.max_county_year = self.database.get_average_visit_year()
+        self.avg_county_year = self.database.get_average_visit_year()
         print("call")
         # print(county_df)
         self.num_counties_visited = int(county_df.visited.sum())
@@ -104,7 +109,7 @@ class FlaskApp(FlaskView):
                                    # range_color=(dmin, dmax),
                                    scope="usa"
                                   )
-        fig = self.set_map_layout(fig)
+        fig = self.__set_map_layout(fig)
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
@@ -116,13 +121,12 @@ class FlaskApp(FlaskView):
 
         # Check whether the precomputed graph is up to date.
         num_visited = self.database.get_num_counties_visited()
-        max_county_year = self.database.get_average_visit_year()
-        avg_county_year 
+        avg_county_year = self.database.get_average_visit_year()
 
-        if not self.compute_running and (num_visited != self.num_counties_visited or max_county_year != self.max_county_year): # or self.template is None:
+        if not self.compute_running and (num_visited != self.num_counties_visited or avg_county_year != self.avg_county_year): # or self.template is None:
             # Kick it off again.
             print("Recomputing")
-            self._precompute_graph()
+            self.__precompute_graph()
 
         while self.template is None:
             time.sleep(0.25)
@@ -132,9 +136,49 @@ class FlaskApp(FlaskView):
         return render_template('notdash.html', graphJSON=self.template, stat_string=visited_string, title='Visited Counties')
         # return "<h1>This is my indexpage2</h1>"
 
+    @route('/log_country', methods=['POST', 'GET'])
+    def log_country(self):
+        if 'country' not in request.values.keys():
+            return Response(response= jsonpickle.encode({'error': 'Query must by of form "?country=<identifier>"', 'success': False}), status=400, mimetype="application/json")
+
+        identifier = request.values['country']
+        country_add_success = self.database.set_visited_country(identifier)
+        if country_add_success:
+            return Response(response= jsonpickle.encode({'error': "None", 'success': True}), status=200, mimetype="application/json")
+        else:
+            return Response(response= jsonpickle.encode({'error': 'Selected identifier was not found in database.', 'success': False}), status=400, mimetype="application/json")
+
+    @route('/countries')
+    def serve_country_graph(self):
+
+        county_df = self.database.get_visited_countries()
+        num_visited = len(county_df[county_df.visited == True])
+
+        visited = county_df[county_df.visited]
+
+        country_name_list = visited.name.tolist()
+
+        fig = px.choropleth(locationmode="country names", 
+                            locations=country_name_list, 
+                            hover_name=country_name_list)
+
+        fig = self.__set_map_layout(fig)
+        visited_string = f' | {num_visited} Countries Visited'
+
+        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+
+        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited States')
+
+
+        # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany"]
+        # >>> 
+        # >>> fig.show()
+        # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany", 'Canada', 'Panama']
+        # >>> fig = px.choropleth(locationmode="country names", locations=ll, hover_name=ll)
+
+
     @route('/states')
     def serve_state_graph(self):
-        print("State")
 
         state_df = self.database.get_state_visits_dataframe()
         num_visited = len(state_df[state_df.visited == True])
@@ -152,7 +196,7 @@ class FlaskApp(FlaskView):
                     color_continuous_scale=self.colorscale,
                     scope="usa")
 
-        fig = self.set_map_layout(fig)
+        fig = self.__set_map_layout(fig)
         visited_string = f' | {num_visited}/50 States{" & DC" if dc_visited else ""} Visited'
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
@@ -198,7 +242,7 @@ class FlaskApp(FlaskView):
         return Response(response=jsonpickle.encode(response), status=200, mimetype="application/json")
 
 
-    def calc_map_center(self, lat_list, lon_list):
+    def __calc_map_center(self, lat_list, lon_list):
 
         min_lat = min(lat_list)
         max_lat = max(lat_list)
@@ -329,7 +373,7 @@ class FlaskApp(FlaskView):
                 polyline_path = [{'lat': data_lats[ridx], 'lng': data_lons[ridx]} \
                     for ridx in range(len(data))]
 
-            c_lat, c_lon, zoom = self.calc_map_center(data_lats, data_lons)
+            c_lat, c_lon, zoom = self.__calc_map_center(data_lats, data_lons)
 
         else:
             zoom = 3
@@ -448,8 +492,12 @@ class FlaskApp(FlaskView):
 
 
 
-FlaskApp.register(app,route_base = '/')        
+print("Register")
+
+FlaskApp._initilization()
+FlaskApp.register(app,route_base = '/')
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8080, host='0.0.0.0')
+    print("Run")
+    app.run(debug=True, port=8090, host='0.0.0.0')

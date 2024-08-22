@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 
 from datetime import datetime
-from sqlalchemy import create_engine, text, func
+from sqlalchemy import create_engine, text, func, or_
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float, Boolean
 from sqlalchemy.sql import select
 from sqlalchemy_utils import database_exists, create_database
@@ -17,11 +17,12 @@ import time
 
 class locationDB:
     """docstring for locationDB"""
-    def __init__(self, db_name, fips_file):
+    def __init__(self, db_name, fips_file, country_file):
         super(locationDB, self).__init__()
         self.db_name = db_name
 
         self.fips = pd.read_csv(fips_file)
+        self.countries = pd.read_csv(country_file)
         # Convert the fips column to a string with leading zeros
         self.fips.fips = self.fips.fips.astype(str).str.zfill(5)
 
@@ -31,12 +32,19 @@ class locationDB:
         # self.conn.execution_options(preserve_rowcount=True)
         
         metadata = MetaData()
-        self.counties = Table('counties', metadata,
+        self.us_counties = Table('counties', metadata,
                 Column('fips', String, primary_key=True),
                 Column('name', String),
                 Column('state', String),
                 Column('visited', Boolean),
                 Column('year', Integer)
+            )
+
+        self.world_countries = Table('countries', metadata,
+                Column('name', String),
+                Column('code_2', String),
+                Column('code_3', String),
+                Column('visited', Boolean),
             )
 
         self.users = Table('users', metadata,
@@ -68,7 +76,13 @@ class locationDB:
             exist=insp.has_table("counties")
             if not exist: # set(insp.get_table_names()) == set(['users', 'positions']):
                 print("Need to add table")
-                # self.counties.create(self.conn.bind)
+                # self.us_counties.create(self.conn.bind)
+                metadata.create_all(self.engine)
+
+            exist_cn=insp.has_table("countries")
+            if not exist_cn: # set(insp.get_table_names()) == set(['users', 'positions']):
+                print("Need to add country table")
+                # self.us_counties.create(self.conn.bind)
                 metadata.create_all(self.engine)
 
             # Check that the table has a 'county_computed' field
@@ -87,17 +101,68 @@ class locationDB:
                 with self.engine.begin() as conn2:
                     result = conn2.execute(text(sql_insert)) 
                     conn2.commit()
-
-
             
         insp = sqlalchemy.inspect(self.engine)
 
         # See if the counties table is populated
-        counties_pop = select(self.counties.c)
+        counties_pop = select(self.us_counties.c)
         result = self.conn.execute(counties_pop)
         result = result.fetchall()
         if len(result) == 0:
             self.populate_county_table()
+
+        # See if the countries table is populated
+        country_pop = select(self.world_countries.c)
+        result = self.conn.execute(country_pop)
+        result = result.fetchall()
+
+        if len(result) == 0:
+            self.populate_countries()
+
+    def get_visited_countries(self):
+
+        exists = select(self.world_countries).where(self.world_countries.c.visited == True)
+        result = self.conn.execute(exists)
+        data = result.fetchall()
+
+        df = pd.DataFrame(data, columns=['name', 'iso_2', 'iso_3', 'visited'])
+        
+        return df
+
+    def set_visited_country(self, identifier):
+        # ID can be name, 2-char code, or 3-char code. 
+        where_clause = or_(self.world_countries.c.name == identifier, 
+                        self.world_countries.c.code_2 == identifier,
+                        self.world_countries.c.code_3 == identifier)
+
+        find_country = select(self.world_countries).where(where_clause)
+        finder = self.conn.execute(find_country)
+        results = finder.fetchall()
+        if len(results) == 0:
+            # Invalid identifier
+            return False
+
+        country_update = self.world_countries.update() \
+                        .where(where_clause) \
+                        .values(visited=True)
+
+        result = self.conn.execute(country_update)
+        self.conn.commit()
+
+        return True
+
+    def populate_countries(self):
+        for ln in range(len(self.countries)):
+            line = self.countries.iloc[ln]
+            name = line['name']
+            alpha_2 = line['alpha-2']
+            alpha_3 = line['alpha-3']
+            # print(name, alpha_2, alpha_3)
+
+            if type(name) is str:
+                mk_country = self.world_countries.insert().values(name=name, code_2 = alpha_2, code_3 = alpha_3, visited=False)
+                r = self.conn.execute(mk_country)
+        self.conn.commit()
 
     def populate_county_table(self):
 
@@ -108,7 +173,7 @@ class locationDB:
         for ln in range(len(self.fips)):
             line = self.fips.iloc[ln]
             if type(line.state) is str:
-                mkcounty = self.counties.insert().values(fips=line.fips,name=line.name,state=line.state,visited=False)
+                mkcounty = self.us_counties.insert().values(fips=line.fips,name=line.name,state=line.state,visited=False)
                 r = self.conn.execute(mkcounty)
         self.conn.commit()
 
@@ -135,8 +200,8 @@ class locationDB:
             county_fips = re.sub('.*US', '', county_fips)
         assert len(county_fips) == 5
 
-        fips_statement = self.counties.c.fips == county_fips
-        exists = select(self.counties.c.fips, self.counties.c.visited, self.counties.c.year).where(fips_statement)
+        fips_statement = self.us_counties.c.fips == county_fips
+        exists = select(self.us_counties.c.fips, self.us_counties.c.visited, self.us_counties.c.year).where(fips_statement)
         result = self.conn.execute(exists)
         data = result.fetchall()
         # print(data)
@@ -149,7 +214,7 @@ class locationDB:
             pass
         else:
             # Set the data
-            county_update = self.counties.update().where(fips_statement).values(visited=True, year=update_year)
+            county_update = self.us_counties.update().where(fips_statement).values(visited=True, year=update_year)
             self.conn.execute(county_update)
             self.conn.commit()
 
@@ -157,14 +222,14 @@ class locationDB:
         # Check that the fips is in the table
         raise NotImplementedError("Need to update")
 
-        fips_statement = self.counties.c.fips.in_(tuple(county_fips_ids))
-        exists = select(self.counties.c).where(fips_statement)
+        fips_statement = self.us_counties.c.fips.in_(tuple(county_fips_ids))
+        exists = select(self.us_counties.c).where(fips_statement)
         result = self.conn.execute(exists)
         data = result.fetchall()
         assert len(data) == len(county_fips_ids)
 
         # # Set the data
-        county_update = self.counties.update().where(fips_statement).values(visited=True)
+        county_update = self.us_counties.update().where(fips_statement).values(visited=True)
         self.conn.execute(county_update)
         self.conn.commit()
 
@@ -174,7 +239,7 @@ class locationDB:
         self.conn.execute(query)
         self.conn.commit()
 
-        query_cty = self.counties.update() \
+        query_cty = self.us_counties.update() \
                     .values(visited = False, year=-1)
         self.conn.execute(query_cty)
         self.conn.commit()
@@ -182,8 +247,8 @@ class locationDB:
     def unset_county_by_fips(self, fips: str):
         assert type(fips) == str
 
-        fips_statement = self.counties.c.fips == fips
-        county_update = self.counties.update().where(fips_statement).values(visited=False, year=-1)
+        fips_statement = self.us_counties.c.fips == fips
+        county_update = self.us_counties.update().where(fips_statement).values(visited=False, year=-1)
         self.conn.execute(county_update)
         self.conn.commit()
 
@@ -225,13 +290,13 @@ class locationDB:
             
 
     def get_num_counties_visited(self):
-        visited = select(self.counties.c).where(self.counties.c.visited == True)
+        visited = select(self.us_counties.c).where(self.us_counties.c.visited == True)
         result = self.conn.execute(visited)
         result = result.fetchall()
         return len(result)
 
     def get_last_visit_year(self):
-        visited = select(self.counties.c.year).where(self.counties.c.visited == True)
+        visited = select(self.us_counties.c.year).where(self.us_counties.c.visited == True)
         result = self.conn.execute(visited)
         result = result.fetchall()
         
@@ -240,7 +305,7 @@ class locationDB:
         return int(np.max(result))
 
     def get_average_visit_year(self):
-        visited = select(self.counties.c.year).where(self.counties.c.visited == True)
+        visited = select(self.us_counties.c.year).where(self.us_counties.c.visited == True)
         result = self.conn.execute(visited)
         result = result.fetchall()
         
@@ -249,7 +314,6 @@ class locationDB:
 
         result = np.array(result).reshape(-1)
         average_year = np.mean(result)
-        print("Avg year", average_year)
         
         return average_year
 
@@ -315,7 +379,7 @@ class locationDB:
 
 
     def get_county_visits_dataframe(self):
-        county_data = select(self.counties.c.fips, self.counties.c.visited, self.counties.c.year)
+        county_data = select(self.us_counties.c.fips, self.us_counties.c.visited, self.us_counties.c.year)
         result = self.conn.execute(county_data)
         result = result.fetchall()
         result = pd.DataFrame(result, columns=['FIPS', 'visited', 'year'])
@@ -339,7 +403,7 @@ class locationDB:
         return result
 
     def get_state_visits_dataframe(self):
-        state_data = select(self.counties.c.state, self.counties.c.visited, self.counties.c.year)
+        state_data = select(self.us_counties.c.state, self.us_counties.c.visited, self.us_counties.c.year)
         result = self.conn.execute(state_data)
         result = result.fetchall()
         result = pd.DataFrame(result, columns=['state', 'visited', 'year'])
@@ -540,8 +604,8 @@ class locationDB:
 if __name__ == "__main__":
 
     import config
-    item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
-    # item = locationDB(db_name = config.database_location, fips_file = 'config_files/state_and_county_fips_master.csv')
+    item = locationDB(db_name = 'location2.sqlite', fips_file = config.county_fips_file, country_file=config.country_file)
+    # item = locationDB(db_name = config.database_location, fips_file = config.county_fips_file, country_file=config.country_file)
     # Get number of populated counties
     print(item.get_num_counties_visited())
     print(item.get_last_visit_year())
@@ -600,6 +664,12 @@ if __name__ == "__main__":
     s = time.time()
     print(item.get_average_visit_year())
     print(time.time() - s)
+
+    print("1", item.set_visited_country('United States of America'))
+    print("2", item.set_visited_country('United States a'))
+    # item.set_visited_country('RS')
+    # item.set_visited_country('PER')
+    print(item.get_visited_countries())
 
     # response = requests.post("https://owntracks.exploretheworld.tech/log", 
     #     data="lat=0&lon=0&timestamp=0&acc=9999&spd=5")

@@ -62,8 +62,8 @@ files = [
 #        ('raleigh_4.gpx', 2017),
 #        ('raleigh_3.gpx', 2017),
 #        ('nick_trip.gpx', 2014),
-        ('sharon_vt.gpx', 2005),
-        ('story_land.gpx', 2005)
+        # ('sharon_vt.gpx', 2005),
+        # ('story_land.gpx', 2005)
         ]
 
 last_county = None
@@ -102,8 +102,9 @@ for ff in files:
 county_fips_list = [
 #    ('04013', 2014)   ('49049', 2024),    ('49035', 2000),    ('32017', 2015),
 #    ('54009', 2019), ('30073', 2015), ('40119', 2015), ('40037', 2015)
-    ('23031', 2005)
-    ]
+    ('23031', 2005), ('54029', 2019), ('40081', 2005), ('40017',2005), ('40147', 2004), ('25023', 2002),
+    ('22071', 2002), ('22051', 2002)
+]
 
 for fip_pair in county_fips_list:
     database.set_visited_county(fip_pair)
