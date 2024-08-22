@@ -167,7 +167,7 @@ class FlaskApp(FlaskView):
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited States')
+        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited Countries')
 
 
         # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany"]
