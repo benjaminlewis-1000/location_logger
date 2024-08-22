@@ -234,10 +234,24 @@ class locationDB:
         visited = select(self.counties.c.year).where(self.counties.c.visited == True)
         result = self.conn.execute(visited)
         result = result.fetchall()
-        print(result)
+        
         if result is None or len(result) == 0:
             return -1
         return int(np.max(result))
+
+    def get_average_visit_year(self):
+        visited = select(self.counties.c.year).where(self.counties.c.visited == True)
+        result = self.conn.execute(visited)
+        result = result.fetchall()
+        
+        if result is None or len(result) == 0:
+            return -1
+
+        result = np.array(result).reshape(-1)
+        average_year = np.mean(result)
+        print("Avg year", average_year)
+        
+        return average_year
 
     def get_points_to_parse_dataframe(self, start_utc = None, num_points = None):
 
@@ -526,7 +540,7 @@ class locationDB:
 if __name__ == "__main__":
 
     import config
-    item = locationDB(db_name = 'location.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
+    item = locationDB(db_name = 'location2.sqlite', fips_file = 'config_files/state_and_county_fips_master.csv')
     # item = locationDB(db_name = config.database_location, fips_file = 'config_files/state_and_county_fips_master.csv')
     # Get number of populated counties
     print(item.get_num_counties_visited())
@@ -574,15 +588,18 @@ if __name__ == "__main__":
 
     # print(item.get_num_counties_visited())
 
-    s = time.time()
-    data = item.get_points_to_parse_dataframe(num_points=1203)
-    print(time.time() - s)
+    # s = time.time()
+    # # data = item.get_points_to_parse_dataframe(num_points=1203)
+    # print(time.time() - s)
 
     debug = item.get_debug_subset()
     # import requests
 
     print("Unprocesseed")
     print(item.count_unprocessed_counties())
+    s = time.time()
+    print(item.get_average_visit_year())
+    print(time.time() - s)
 
     # response = requests.post("https://owntracks.exploretheworld.tech/log", 
     #     data="lat=0&lon=0&timestamp=0&acc=9999&spd=5")

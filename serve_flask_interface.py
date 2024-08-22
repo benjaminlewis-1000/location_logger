@@ -62,7 +62,7 @@ class FlaskApp(FlaskView):
         self.num_counties_visited = 0
         tmp = self.database.get_county_visits_dataframe()
         self.num_counties = len(tmp)
-        self.max_county_year = self.database.get_last_visit_year()
+        self.max_county_year = self.database.get_average_visit_year()
         del tmp
         self._precompute_graph()
 
@@ -93,7 +93,7 @@ class FlaskApp(FlaskView):
         self.template = None
 
         county_df = self.database.get_county_visits_dataframe()
-        self.max_county_year = self.database.get_last_visit_year()
+        self.max_county_year = self.database.get_average_visit_year()
         print("call")
         # print(county_df)
         self.num_counties_visited = int(county_df.visited.sum())
@@ -116,7 +116,8 @@ class FlaskApp(FlaskView):
 
         # Check whether the precomputed graph is up to date.
         num_visited = self.database.get_num_counties_visited()
-        max_county_year = self.database.get_last_visit_year()
+        max_county_year = self.database.get_average_visit_year()
+        avg_county_year 
 
         if not self.compute_running and (num_visited != self.num_counties_visited or max_county_year != self.max_county_year): # or self.template is None:
             # Kick it off again.
