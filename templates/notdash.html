@@ -1,8 +1,36 @@
 <!doctype html>
 <html>
+ <head>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
+ </head>
  <body>
   <h1>{{title}} {{stat_string }}</h1>
+  <div class="button-container">
+    <a class='btn' href="counties">Counties</a>
+    <a class='btn' href="states">States</a>
+    <a class='btn' href="countries">Countries</a>
+    <a class='btn' href="/">Map</a>
+
+    <form class="form-inline" id="country-form" action="/log_country">
+      <label for="start">Add Country</label>
+      <input type="text" id="start" placeholder="<Country Name or Code>" name="country">
+      <button type="submit">Submit</button>
+    </form> 
+  </div>
+
   <div id='chart' class='chart'></div>
+  <!-- <table>
+    <tbody>
+      <tr>
+        <td>Wyoming</td>
+        <td>7</td>
+        <td>23</td>
+        <td><a class='btn' href='state_view?state=WY'>View</a></td>
+      </tr>
+    </tbody>
+  </table> -->
+
+  {{more_html|safe}}
 </body>
 <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
 <script type='text/javascript'>
@@ -32,19 +60,5 @@
   Plotly.newPlot('chart', graphs, layout, config );
 
 
-  // var layout = {
-  //     autosize: true,
-  //     width: 500,
-  //     height: 500,
-  //     margin: {
-  //       l: 50,
-  //       r: 50,
-  //       b: 100,
-  //       t: 100,
-  //       pad: 4
-  //     },
-  //     paper_bgcolor: '#7f7f7f',
-  //     plot_bgcolor: '#c7c7c7'
-  //   };
-  // Plotly.newPlot('chart',graphs,layout);
-</script></html>
+</script>
+</html>

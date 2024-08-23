@@ -10,6 +10,7 @@
    height: 5%;
 }
 
+
 /* Add some margins for each label */
 .form-inline label {
   margin: 5px 10px 5px 0;
@@ -46,4 +47,61 @@
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+#country-form {
+    display: flex;
+    flex-flow: row wrap;
+    align-items: center;
+    top: 0;
+    position:relative;
+    left: 10px;
+}
+
+#country-form, .btn{
+    z-index: 300;
+}
+
+.btn {
+    position: relative;
+    width: 90px;
+    display: block;
+    background: dodgerblue;
+    padding: 10px;
+    text-align: center;
+    border-radius: 5px;
+    color: white;
+    font-weight: bold;
+    line-height: 15px;
+    margin: 5px 5px 5px 5px;
+    text-decoration: none;
+}
+
+.btn:hover {
+  background-color: royalblue;
+}
+
+.button-container{
+    display: flex;
+    position: absolute;
+    top: 80px;
+    height: 50px;
+    z-index: 300;
+}
+
+#main-map{
+    position: absolute;
+    bottom: 20px;
+    top: unset;
+}
+
+.chart{
+    top: 140px;
+    position: absolute;
+}
+
+table {
+    left: 80%;
+    position: relative;
+    border: 1px solid;
 }

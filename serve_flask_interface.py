@@ -99,10 +99,7 @@ class FlaskApp(FlaskView):
 
         county_df = self.database.get_county_visits_dataframe()
         self.avg_county_year = self.database.get_average_visit_year()
-        print("call")
-        # print(county_df)
         self.num_counties_visited = int(county_df.visited.sum())
-
 
         fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS", color='year',
                                    color_continuous_scale=self.colorscale_county,
@@ -115,6 +112,88 @@ class FlaskApp(FlaskView):
 
         self.template = graphJSON
         self.compute_running = False
+
+    def _compute_table(self, county_df):
+
+        state_list = county_df['state'].unique().tolist()
+        state_names = [config.abbrev_to_us_state[st] for st in state_list]
+
+        grouper = county_df[['state', 'visited']].groupby('state')
+        n_visited = grouper.sum()
+        n_total = grouper.count()
+        # Rename the column
+        n_total = n_total.rename(mapper = {'visited': 'Total'}, axis=1)
+        n_visited = n_visited.rename(mapper = {'visited': 'Visited'}, axis=1)
+        # urls = [f'state_view?state={st}' for st in state_list]
+        urls = [f"<a class='tbl_btn' href='state_view?state={st}'>View</a>" for st in state_list]
+        url_df = pd.DataFrame(list(zip(state_names, urls) ), columns=['Name', 'URL'])
+        url_df.index = state_list # list(zip(state_list, urls)))
+
+        n_visited = n_visited.sort_index()
+        n_total = n_total.sort_index()
+        url_df = url_df.sort_index()
+        table = pd.concat((n_visited.T, n_total.T, url_df.T)).T
+        table.index = np.arange(len(table))
+        table = table.sort_values('Name')
+
+        table_html = table.to_html(escape=False, index=False, columns=['Name', 'Visited', 'Total', 'URL'])
+
+        return table_html
+
+    @route('/state_view', methods=['POST', 'GET'])
+    def serve_state_view(self):
+        abbrev_to_state = config.abbrev_to_us_state
+        state_code = request.values['state'].upper()
+        if state_code not in abbrev_to_state.keys():
+            return render_template('404.html', error=f"Requested state abbreviation \"{state_code}\" \ndoes not correspond to a US state"), 404
+        state_name = abbrev_to_state[state_code]
+
+
+        county_df = self.database.get_county_visits_dataframe()
+
+        # Filter to a state 
+        state_df = county_df[county_df['state'] == state_code]
+        num_visited = len(state_df[state_df.visited == True])
+        num_counties = len(state_df)
+
+        visit_string = f" | {num_visited}/{num_counties} counties ({num_visited / num_counties * 100:.2f}%) visited"
+
+        state_df = state_df.replace(True, 'Visited')
+        state_df = state_df.replace(False, 'Unvisited')
+        state_df = state_df.sort_values('visited')
+
+        if num_visited == num_counties:
+            colors = ['#32D172'] # Visited
+        else:
+            colors = ['#F5F3ED', '#32D172'] # Unvisited, Visited
+
+        fig = px.choropleth(state_df, geojson=self.counties, locations="FIPS", color='visited',
+                                   color_discrete_sequence=colors,
+                                   labels={'True':'Visited', 'False':'Unvisited'},
+                                   projection='mercator',
+                                  )
+        if state_code == 'AK':
+
+            fig.update_geos(
+                  lonaxis_range=[20, 380],
+                  projection_scale=6,
+                  center=dict(lat=61),
+                  visible=False)
+        else:
+            fig.update_geos(fitbounds='locations', visible=False)
+
+
+        fig = self.__set_map_layout(fig)
+
+        graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+
+        state_urls = self._compute_table(county_df)
+
+        return render_template('notdash.html', \
+                               graphJSON=graphJSON, \
+                               stat_string=visit_string, \
+                               title=state_name,
+                               more_html=state_urls)
 
     @route('/counties')
     def serve_county_graph(self):
@@ -146,7 +225,8 @@ class FlaskApp(FlaskView):
         if country_add_success:
             return Response(response= jsonpickle.encode({'error': "None", 'success': True}), status=200, mimetype="application/json")
         else:
-            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
+            return render_template('404.html', error=f'Selected identifier "{identifier}" was not found in database.'), 404
+            # return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
 
     @route('/countries')
     def serve_country_graph(self):
@@ -201,7 +281,13 @@ class FlaskApp(FlaskView):
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited States')
+        county_df = self.database.get_county_visits_dataframe()
+        state_urls = self._compute_table(county_df)
+        return render_template('notdash.html', \
+                               graphJSON=graphJSON, \
+                               stat_string=visited_string, \
+                               title='Visited States',
+                               more_html = state_urls)
 
 
     @route('/log', methods=['GET', 'POST'])
@@ -402,6 +488,7 @@ class FlaskApp(FlaskView):
             return render_template('example.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
         else:
             print("ll", len(polyline_path))
+            # print(polyline_path)
 
             polyline = {
                 "stroke_color": "#0AB0DE",

@@ -23,15 +23,23 @@
         </form> 
       {% else %}
         <form class="form-inline" action="/">
-        {% if points is sameas true %}
+        <!-- {% if points is sameas true %}
           <input type=hidden value=True name=points >
-        {% endif %}
-          <label for="email">Start</label>
+        {% endif %} -->
+          <label for="start">Start</label>
           <input type="text" id="start" value="{{start}}" placeholder="{{start}}" name="start">
-          <label for="pwd">End</label>
+          <label for="end">End</label>
           <input type="text" id="end" value="{{end}}" placeholder="{{end}}" name="end">
           <button type="submit">Submit</button>
         </form> 
+
+        <div class="button-container" id='main-map'>
+          <a class='btn' href="counties">Counties</a>
+          <a class='btn' href="states">States</a>
+          <a class='btn' href="countries">Countries</a>
+
+        </div>
+        
       {% endif %}
 
   </body>

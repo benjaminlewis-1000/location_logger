@@ -379,10 +379,14 @@ class locationDB:
 
 
     def get_county_visits_dataframe(self):
-        county_data = select(self.us_counties.c.fips, self.us_counties.c.visited, self.us_counties.c.year)
+        county_data = select(self.us_counties.c.fips, \
+                             self.us_counties.c.visited, \
+                             self.us_counties.c.state, \
+                             self.us_counties.c.year)
+
         result = self.conn.execute(county_data)
         result = result.fetchall()
-        result = pd.DataFrame(result, columns=['FIPS', 'visited', 'year'])
+        result = pd.DataFrame(result, columns=['FIPS', 'visited', 'state', 'year'])
         # result.year = pd.to_numeric(result.year)
 
         pos_idcs = result['year'] > 0
