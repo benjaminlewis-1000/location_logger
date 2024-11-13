@@ -25,7 +25,9 @@ class CountyAdder(object):
         # Load the json file with county coordinates
         self.geoData = gpd.read_file(config.basic_county_json)
         # Set up a hook to the location database
-        self.database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+        self.database = location_db.locationDB(db_name=config.database_location, 
+            fips_file = config.county_fips_file,  
+            country_file=config.country_file)
 
         self.speed_thresh = 45 # 45 m/s ~= 100 mph
 

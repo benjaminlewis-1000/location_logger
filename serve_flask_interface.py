@@ -24,7 +24,26 @@ import re
 import requests
 import time
 
+from flask_httpauth import HTTPBasicAuth
+from werkzeug.security import generate_password_hash, check_password_hash
+
 app = Flask(__name__)
+
+
+auth = HTTPBasicAuth()
+
+password = os.environ['PASSWORD']
+users = {
+    "admin": generate_password_hash(password),
+    "benjamin": generate_password_hash(password),
+}
+
+@auth.verify_password
+def verify_password(username, password):
+    if username in users and \
+            check_password_hash(users.get(username), password):
+        return username
+
 load_dotenv()
 
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
@@ -141,6 +160,7 @@ class FlaskApp(FlaskView):
         return table_html
 
     @route('/state_view', methods=['POST', 'GET'])
+    @auth.login_required
     def serve_state_view(self):
         abbrev_to_state = config.abbrev_to_us_state
         state_code = request.values['state'].upper()
@@ -153,6 +173,13 @@ class FlaskApp(FlaskView):
 
         # Filter to a state 
         state_df = county_df[county_df['state'] == state_code]
+        # Get the first two digits of the FIPS code in order to filter down the counties. 
+        fips_first_two = state_df['FIPS'].iloc[0][:2]
+        # Use that to just get a subset of counties in the GEOJSON
+        # that correspond to that state.
+        counties_list = [c for c in self.counties['features'] if c['id'].startswith(fips_first_two)]
+        counties_subset = {'features': counties_list, 'type': self.counties['type']}
+
         num_visited = len(state_df[state_df.visited == True])
         num_counties = len(state_df)
 
@@ -167,7 +194,8 @@ class FlaskApp(FlaskView):
         else:
             colors = ['#F5F3ED', '#32D172'] # Unvisited, Visited
 
-        fig = px.choropleth(state_df, geojson=self.counties, locations="FIPS", color='visited',
+        # fig = px.choropleth(state_df, geojson=self.counties, locations="FIPS", color='visited',
+        fig = px.choropleth(state_df, geojson=counties_subset, locations="FIPS", color='visited',
                                    color_discrete_sequence=colors,
                                    labels={'True':'Visited', 'False':'Unvisited'},
                                    projection='mercator',
@@ -196,6 +224,7 @@ class FlaskApp(FlaskView):
                                more_html=state_urls)
 
     @route('/counties')
+    @auth.login_required
     def serve_county_graph(self):
 
         # Check whether the precomputed graph is up to date.
@@ -229,6 +258,7 @@ class FlaskApp(FlaskView):
             # return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
 
     @route('/countries')
+    @auth.login_required
     def serve_country_graph(self):
 
         county_df = self.database.get_visited_countries()
@@ -258,6 +288,7 @@ class FlaskApp(FlaskView):
 
 
     @route('/states')
+    @auth.login_required
     def serve_state_graph(self):
 
         state_df = self.database.get_state_visits_dataframe()
@@ -371,6 +402,7 @@ class FlaskApp(FlaskView):
 
 
     @route('/', methods=['GET', 'POST'])
+    @auth.login_required
     @cross_origin(origin='*',headers=['Content-Type','Authorization'])
     def main_map(self):
 

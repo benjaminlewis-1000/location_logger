@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 import location_db
 import config
 
-database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+database = location_db.locationDB(db_name=config.database_location, \
+        fips_file = config.county_fips_file, \
+        country_file=config.country_file)
 
 source_folder = '/data/gdrive_data/unprocessed'
 dest_folder = '/data/gdrive_data/processed'

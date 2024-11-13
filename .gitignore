@@ -1,4 +1,7 @@
 *.sqlite
+*.env
 *.gpx
 __pycache__
 Records.json
+*.bak
+*.swp

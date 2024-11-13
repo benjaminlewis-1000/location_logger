@@ -30,3 +30,5 @@ pandas
 scikit-learn
 fiona
 Werkzeug==2.2.2
+flask-login
+Flask-HTTPAuth
