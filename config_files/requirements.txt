@@ -4,8 +4,7 @@ flask_classful
 flask-googlemaps
 flask-login
 flask-sqlalchemy
-Flask==2.0.2
-# flask==1.1.1
+Flask==2.3.3
 flask_session
 geocoder
 geopandas
@@ -29,6 +28,7 @@ numpy
 pandas
 scikit-learn
 fiona
-Werkzeug==2.2.2
+Werkzeug
+xmltodict
 flask-login
 Flask-HTTPAuth

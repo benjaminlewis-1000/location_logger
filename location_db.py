@@ -548,16 +548,16 @@ class locationDB:
 
         assert default_end in ['now', '1970']
 
-        if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', end_string):
+        if re.match(r'\d+-\d+.?\d+ \d+.?\d+.?\d+', end_string):
             specific = True
         else:
             specific = False
 
-        if re.match('^\d\d$', end_string) or re.match('^\d\d\d\d$', end_string):
+        if re.match(r'^\d\d$', end_string) or re.match(r'^\d\d\d\d$', end_string):
             end_string = end_string + '-12-31'
         try:
             end = dateutil.parser.parse(end_string)
-            if re.match('^\d\d.?\d\d$', end_string) or re.match('^\d\d\d\d.?\d\d$', end_string):
+            if re.match(r'^\d\d.?\d\d$', end_string) or re.match(r'^\d\d\d\d.?\d\d$', end_string):
                 end = end + dateutil.relativedelta.relativedelta(day=31)
             if not specific:
                 end = end + dateutil.relativedelta.relativedelta(hour=23, minute=59, second=59)
@@ -569,11 +569,11 @@ class locationDB:
 
     def calc_start(self, start_string, default_start='now'):
         assert default_start in ['now', '1970']
-        if re.match('^\d\d$', start_string) or re.match('^\d\d\d\d$', start_string):
+        if re.match(r'^\d\d$', start_string) or re.match(r'^\d\d\d\d$', start_string):
             start_string = start_string + '-01-01'
         try:
             start = dateutil.parser.parse(start_string)
-            if re.match('^\d\d.?\d\d$', start_string) or re.match('^\d\d\d\d.?\d\d$', start_string):
+            if re.match(r'^\d\d.?\d\d$', start_string) or re.match(r'^\d\d\d\d.?\d\d$', start_string):
                 start = start + dateutil.relativedelta.relativedelta(day=1)
         except:
             if default_start == '1970':
@@ -581,7 +581,7 @@ class locationDB:
             else:
                 start = datetime.now()
     
-        if re.match('\d+-\d+.?\d+ \d+.?\d+.?\d+', start_string):
+        if re.match(r'\d+-\d+.?\d+ \d+.?\d+.?\d+', start_string):
             specific = True
         else:
             specific = False

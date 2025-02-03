@@ -1,5 +1,0 @@
-sqlalchemy
-sqlalchemy_utils
-plotly
-pandas
-numpy

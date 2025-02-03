@@ -1,4 +1,5 @@
 *.sqlite
+*.kml
 *.env
 *.gpx
 __pycache__

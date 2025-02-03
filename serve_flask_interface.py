@@ -221,6 +221,7 @@ class FlaskApp(FlaskView):
                                graphJSON=graphJSON, \
                                stat_string=visit_string, \
                                title=state_name,
+                               page_title=f"OwnTracks - State View: {state_name}",
                                more_html=state_urls)
 
     @route('/counties')
@@ -241,7 +242,11 @@ class FlaskApp(FlaskView):
 
         visited_string = f' - {num_visited}/{self.num_counties} | {num_visited / self.num_counties * 100:.2f}%'
 
-        return render_template('notdash.html', graphJSON=self.template, stat_string=visited_string, title='Visited Counties')
+        return render_template('notdash.html', 
+                graphJSON=self.template, 
+                stat_string=visited_string, 
+                title='Visited Counties', 
+                page_title='OwnTracks - Visited Counties')
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/log_country', methods=['POST', 'GET'])
@@ -277,7 +282,11 @@ class FlaskApp(FlaskView):
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-        return render_template('notdash.html', graphJSON=graphJSON, stat_string=visited_string, title='Visited Countries')
+        return render_template('notdash.html', 
+            graphJSON=graphJSON, 
+            stat_string=visited_string, 
+            title='Visited Countries', 
+            page_title='OwnTracks - Visited Countries')
 
 
         # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany"]
@@ -318,6 +327,7 @@ class FlaskApp(FlaskView):
                                graphJSON=graphJSON, \
                                stat_string=visited_string, \
                                title='Visited States',
+                               page_title='OwnTracks - Visited States',
                                more_html = state_urls)
 
 
@@ -517,7 +527,7 @@ class FlaskApp(FlaskView):
                 markers=markers
             )
 
-            return render_template('example.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
+            return render_template('mapview.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
         else:
             print("ll", len(polyline_path))
             # print(polyline_path)
@@ -546,7 +556,7 @@ class FlaskApp(FlaskView):
             )
 
             print(plinemap)
-            return render_template('example.html', map=plinemap, start=start_datetime, end=end_datetime, delete=False, points=False)
+            return render_template('mapview.html', map=plinemap, start=start_datetime, end=end_datetime, delete=False, points=False)
 
 
 

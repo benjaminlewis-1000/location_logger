@@ -1,5 +1,5 @@
 #FROM python:3.11-alpine
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 WORKDIR /project
 
@@ -9,7 +9,9 @@ WORKDIR /project
 RUN apt update && apt install -y g++ libgeos-dev libgdal-dev wget cron procps bash-completion
 
 ADD config_files/requirements.txt /project
+
 RUN pip install -r requirements.txt
+
 
 ##############################
 # flask-googlemaps has an issue with a template. Reinstall a later version
@@ -17,7 +19,7 @@ RUN pip install -r requirements.txt
 RUN wget https://github.com/flask-extensions/Flask-GoogleMaps/archive/refs/tags/0.4.1.1.tar.gz -O /flask.tar.gz
 WORKDIR /
 RUN tar xvf flask.tar.gz
-RUN cp /Flask-GoogleMaps-0.4.1.1/flask_googlemaps/*  /usr/local/lib/python3.11/site-packages/flask_googlemaps -R 
+RUN cp /Flask-GoogleMaps-0.4.1.1/flask_googlemaps/*  /usr/local/lib/python3.12/site-packages/flask_googlemaps -R 
 
 WORKDIR /project
 

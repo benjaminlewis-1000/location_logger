@@ -21,6 +21,8 @@ services:
     networks:
       - traefik_proxy
     restart: always
+    environment:
+      - TZ=America/New_York
 
 networks:
   default: 
