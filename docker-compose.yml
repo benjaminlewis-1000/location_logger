@@ -16,6 +16,8 @@ services:
     image:
       location_img
     container_name: location_track
+    external_links:
+      - cloudflared-tunnel 
     env_file:
       - .env
     command:
@@ -23,7 +25,7 @@ services:
     volumes:
       - '/app/node_modules'
       - /mnt/fast_storage/appdata/location_tracks:/data
-      - /home/benjamin/docker_installs/location_track/:/project
+      - /home/benjamin/docker_via_tunnels/location_track/:/project
     networks:
       - traefik_proxy
     restart: always
