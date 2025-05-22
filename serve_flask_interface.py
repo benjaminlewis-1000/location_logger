@@ -1,8 +1,9 @@
 # Using graph_objects
 
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
+from urllib.request import Request, urlopen
 from dotenv import load_dotenv
-from flask import Flask, render_template, Response, request
+from flask import Flask, render_template, Response, request, redirect, url_for
 from flask_classful import FlaskView, route
 from flask_cors import CORS, cross_origin
 from flask_googlemaps import GoogleMaps, Map
@@ -10,6 +11,7 @@ from json import dumps
 from plotly import utils
 from urllib.request import urlopen
 import config
+import requests
 import geopandas as gpd
 import json
 import jsonpickle
@@ -23,7 +25,9 @@ import plotly.express as px
 import re
 import requests
 import time
-
+import xmltodict
+import dateutil.parser
+import pytz
 from flask_httpauth import HTTPBasicAuth
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -76,7 +80,10 @@ class FlaskApp(FlaskView):
 
 
         cls.colorscale = plotly.colors.sequential.Viridis
+        #n_colors = 40
+        #cls.colorscale = px.colors.sample_colorscale("viridis", [n/(n_colors -1) for n in range(n_colors)])
         cls.colorscale = cls.colorscale[::-1]
+        # cls.colorscale = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725', '#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725']
         cls.colorscale_county = cls.colorscale.copy()
         cls.colorscale_county[0] = '#ffeae8'
 
@@ -117,10 +124,11 @@ class FlaskApp(FlaskView):
         self.template = None
 
         county_df = self.database.get_county_visits_dataframe()
+        visited_df = county_df[county_df['visited']==True]
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
 
-        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS", color='year',
+        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS",  color='year',
                                    color_continuous_scale=self.colorscale_county,
                                    # range_color=(dmin, dmax),
                                    scope="usa"
@@ -266,10 +274,10 @@ class FlaskApp(FlaskView):
     @auth.login_required
     def serve_country_graph(self):
 
-        county_df = self.database.get_visited_countries()
-        num_visited = len(county_df[county_df.visited == True])
+        country_df = self.database.get_visited_countries()
+        num_visited = len(country_df[country_df.visited == True])
 
-        visited = county_df[county_df.visited]
+        visited = country_df[country_df.visited]
 
         country_name_list = visited.name.tolist()
 
@@ -307,14 +315,16 @@ class FlaskApp(FlaskView):
         if dc_visited:
             num_visited -= 1
             
-        visited = state_df[state_df.visited]
-        visit_states = visited.state.tolist()
-        visit_year = visited.year.tolist()
+        df = state_df[state_df.visited == True]
+        
+        fig = px.choropleth(df,
+                locations='state',
+                locationmode='USA-states',
+                color='year',
+                color_continuous_scale=self.colorscale,
+                scope='usa',
+                )        
 
-        fig = px.choropleth(locations=visit_states, locationmode="USA-states", 
-                    color=visit_year,
-                    color_continuous_scale=self.colorscale,
-                    scope="usa")
 
         fig = self.__set_map_layout(fig)
         visited_string = f' | {num_visited}/50 States{" & DC" if dc_visited else ""} Visited'
@@ -529,7 +539,6 @@ class FlaskApp(FlaskView):
 
             return render_template('mapview.html', map=sndmap, start=start_datetime, end=end_datetime, delete=False, points=True)
         else:
-            print("ll", len(polyline_path))
             # print(polyline_path)
 
             polyline = {
@@ -619,6 +628,75 @@ class FlaskApp(FlaskView):
         return Response(response=jsonpickle.encode({"status": "OK", "deleted": del_id}), status=200, mimetype="application/json")
 
 
+    @route('/log_flight', methods=['POST', 'GET'])
+    def log_flight(self):
+        test = False
+        data_file = '/data/tmp_flight.kml'
+
+        if request.method == 'POST':
+            url = request.form['flight_kml']
+
+            if not test:
+                if 'www.flightaware.com' not in url:
+                    return render_template('flight_log_form.html', message=f'Non flightaware url: {url}')
+
+                try:
+                    req = Request(
+                        url=url,
+                        headers={'User-Agent': 'Mozilla/5.0'}
+                    )
+
+                except:
+                    return render_template('flight_log_form.html', message=f'Bad url: {url}')
+
+                webpage = urlopen(req).read()
+                web_decode = webpage.decode('utf-8')
+
+                with open(data_file, "w") as file:
+                    print(web_decode, file=file)
+
+            ##### Now we do this regardless.
+            print("Proess")
+            uuid = self.database.get_user_id('ben')
+
+
+            with open(data_file, 'r') as fh:
+                data = fh.read()
+
+            data = xmltodict.parse(data)
+    
+            when = data['kml']['Document']['Placemark'][2]['gx:Track']['when']
+            where = data['kml']['Document']['Placemark'][2]['gx:Track']['gx:coord']
+
+            assert len(when) == len(where)
+
+            for ptidx in range(len(when)):
+                zulutime = when[ptidx]
+                loc = where[ptidx]
+                lon, lat, alt = loc.split(' ')
+                lat = float(lat)
+                lon = float(lon)
+                alt = float(alt)
+                timeiso = dateutil.parser.isoparse(zulutime).astimezone(timezone.utc)
+                utc_time  = int(timeiso.timestamp())
+
+                pos_data = {}
+                pos_data['uuid'] = uuid
+                pos_data['dev_id'] = 'ben'
+                pos_data['utc'] = utc_time
+                pos_data['lat'] = lat
+                pos_data['lon'] = lon
+                pos_data['battery'] = -1
+                pos_data['accuracy'] = -1
+                pos_data['date'] = timeiso
+                pos_data['altitude'] = alt
+                pos_data['speed'] = 0
+                pos_data['source'] = 'hist'
+
+                self.database.insert_location(pos_data)
+
+            return redirect(url_for('FlaskApp:main_map'))
+        return render_template('flight_log_form.html')
 
 
 # This weird technique, and not having an

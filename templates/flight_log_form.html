@@ -1,0 +1,9 @@
+<form action="{{ url_for('FlaskApp:log_flight') }}" method="post">
+    {% if message %}
+    {{message}}</br>
+    Please try again</br>
+    {% endif %}
+    <input type="text" name="flight_kml">
+    <input type="submit">
+</form>
+

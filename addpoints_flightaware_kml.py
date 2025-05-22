@@ -61,6 +61,7 @@ for ptidx in range(len(when)):
     lon = float(lon)
     alt = float(alt)
     timeiso = dateutil.parser.isoparse(zulutime)
+    print(zulutime)
     print(timeiso)
     print(int(timeiso.strftime('%s')))
     print(timeiso.tzinfo, zulutime)

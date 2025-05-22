@@ -1,6 +1,12 @@
 version: "3.9"
 services:
 
+   # Note: On the Cloudflare zero trust dashboard, this app
+   # has a hostname of owntracks.exploretheworld.tech, and is
+   # running as service http://location_track:5000, since the
+   # container name is location_track and the default port is 
+   # 5000. It is also on the same docker network, traefik_proxy,
+   # as the cloudflared container.
    location_track:
     build:
       context: .
