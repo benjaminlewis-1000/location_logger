@@ -10,7 +10,9 @@ from shapely.geometry import Point
 # # Load the json file with county coordinates
 geoData = gpd.read_file(config.basic_county_json)
 # Set up a hook to the location database
-database = location_db.locationDB(db_name=config.database_location, fips_file = config.county_fips_file)
+database = location_db.locationDB(db_name=config.database_location, 
+                                  fips_file = config.county_fips_file, 
+                                  country_file = config.country_file)
 # database.unset_all_points()
 # exit()
 
@@ -101,15 +103,16 @@ for ff in files:
 
 county_fips_list = [
 #    ('04013', 2014)   ('49049', 2024),    ('49035', 2000),    ('32017', 2015),
-#    ('54009', 2019), ('30073', 2015), ('40119', 2015), ('40037', 2015)
-    ('23031', 2005), ('54029', 2019), ('40081', 2005), ('40017',2005), ('40147', 2004), ('25023', 2002),
-    ('22071', 2002), ('22051', 2002)
+#    ('54009', 2019), ('30073', 2015), ('40119', 2015), ('40037', 2015#)
+#    ('23031', 2005), ('54029', 2019), ('40081', 2005), ('40017',2005), ('40147', 2004), ('25023', 2002),
+#    ('22071', 2002), ('22051', 2002)
+    # ('04015', 2015)
 ]
 
 for fip_pair in county_fips_list:
     database.set_visited_county(fip_pair)
 
-unset_fips_list = []# [30035, 34001, 18009, 17009]
+unset_fips_list = [17089]# [30035, 34001, 18009, 17009]
 # '45051', '45067', '45033', '45041','45031', '45069', \
 # # '37153', '37123', '37151', '37081', '37067', '37189', '37171'\
 # # 39141, 39079, 39053, 54053, 54079, 54019, 54081, 54055, 51021, 51197, 51035
