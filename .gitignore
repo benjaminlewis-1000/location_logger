@@ -1,4 +1,5 @@
 *.sqlite
+.location_track_env
 *.kml
 *.env
 *.gpx
