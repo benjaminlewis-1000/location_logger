@@ -14,7 +14,7 @@ database = location_db.locationDB(db_name=config.database_location, \
         country_file=config.country_file)
 
 source_folder = '/data/gdrive_data/unprocessed'
-dest_folder = '/data/gdrive_data/processed'
+dest_folder = '/data/gdrive_data/processed/GPSLogger'
 
 def read_process_gps(file):
     assert os.path.exists(file)
@@ -65,27 +65,19 @@ def read_process_gps(file):
                 # print("Here")
                 # exit()
 
+no_fails = True
+for root, dirs, files in os.walk(source_folder):
+    print(files)
+    for f in files:
+        source_path = os.path.join(root, f)
+        if not source_path.endswith('.gpx'):
+            continue
 
-for root, dirs, _ in os.walk(source_folder):
-    for d in dirs:
-        d_files = os.listdir(os.path.join(root, d))
-        gpx_files = [f for f in d_files if f.endswith('.gpx')]
-        # print(d, gpx_files)
-        no_fails = True
-        os.makedirs(os.path.join(dest_folder, d), exist_ok=True)
-        for gg in gpx_files:
-            source_path = os.path.join(root, d, gg)
-            dest_path = os.path.join(dest_folder, d, gg)
-            # read_process_gps(os.path.join(root, d, gg))
-            print(source_path)
+        dest_path = os.path.join(dest_folder, f)
 
-            try:
-                read_process_gps(source_path)
-                shutil.move(source_path, dest_path)
-            except Exception as e:
-                print(f"Failure! {source_path}, {e}")
-                no_fails = False
-
-
-        if no_fails and d != 'holding_dir':
-            shutil.rmtree(os.path.join(root, d))
+        try:
+            read_process_gps(source_path)
+            shutil.move(source_path, dest_path)
+        except Exception as e:
+            print(f"Failure! {source_path}, {e}")
+            no_fails = False
