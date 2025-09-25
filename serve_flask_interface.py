@@ -124,6 +124,7 @@ class FlaskApp(FlaskView):
         self.template = None
 
         county_df = self.database.get_county_visits_dataframe()
+
         visited_df = county_df[county_df['visited']==True]
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
@@ -164,6 +165,7 @@ class FlaskApp(FlaskView):
         table = table.sort_values('Name')
 
         table_html = table.to_html(escape=False, index=False, columns=['Name', 'Visited', 'Total', 'URL'])
+#         print(table_html)
 
         return table_html
 
@@ -280,6 +282,9 @@ class FlaskApp(FlaskView):
         visited = country_df[country_df.visited]
 
         country_name_list = visited.name.tolist()
+        
+        table_df = country_df.rename(columns={'name': 'Countries Visited'})
+        table_html = table_df.to_html(escape=False, index=False, columns=['Countries Visited'])
 
         fig = px.choropleth(locationmode="country names", 
                             locations=country_name_list, 
@@ -294,6 +299,7 @@ class FlaskApp(FlaskView):
             graphJSON=graphJSON, 
             stat_string=visited_string, 
             title='Visited Countries', 
+            more_html = table_html,
             page_title='OwnTracks - Visited Countries')
 
 

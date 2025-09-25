@@ -1,11 +1,75 @@
 <!doctype html>
 <html>
- <head>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
-    <title>{{page_title}}</title>
- </head>
- <body>
-  <h1>{{title}} {{stat_string }}</h1>
+<head>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
+  <title>{{page_title}}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      text-align: center;
+    }
+
+    h1 {
+      margin-top: 1rem;
+      text-align: initial;
+      margin-left: 2rem;
+    }
+
+    .button-container {
+      margin: -1rem 1.5rem;
+    }
+
+    .content-wrapper {
+      max-width: 90vw;   /* keep content within viewport */
+      margin: 4rem auto;    /* center horizontally */
+    }
+
+    .plotly-container {
+      display: flex; /* Enables Flexbox */
+      justify-content: center; /* Horizontally centers content */
+      align-items: center; /* Vertically centers content (optional) */
+    }
+
+    #chart {
+      /* width: 100vw;        /* chart only takes 80% of screen width */
+      margin: 0 auto;
+    }
+
+    .table-container {
+      width: 60vw;
+      margin: 2rem auto;
+      /*overflow-x: auto;   /* allow scroll if absolutely necessary */
+    }
+
+    .dataframe {
+      left: 0%;
+    }
+
+    .table-container table {
+      width: 60vw;
+      margin: 0 auto;
+      border-collapse: collapse;
+    }
+
+    .main-svg .svg-container { /* Overwrite Python properties */
+      width: 100%;
+    }
+
+    .table-container th,
+    .table-container td {
+      border: 1px solid #ccc;
+      padding: 8px 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <!-- Title -->
+  <h1>{{title}} {{stat_string}}</h1>
+
+  <!-- Buttons + form -->
   <div class="button-container">
     <a class='btn' href="counties">Counties</a>
     <a class='btn' href="states">States</a>
@@ -16,50 +80,29 @@
       <label for="start">Add Country</label>
       <input type="text" id="start" placeholder="<Country Name or Code>" name="country">
       <button type="submit">Submit</button>
-    </form> 
+    </form>
   </div>
 
-  <div id='chart' class='chart'></div>
-  <!-- <table>
-    <tbody>
-      <tr>
-        <td>Wyoming</td>
-        <td>7</td>
-        <td>23</td>
-        <td><a class='btn' href='state_view?state=WY'>View</a></td>
-      </tr>
-    </tbody>
-  </table> -->
+  <!-- Plotly chart -->
+  <div class="content-wrapper">
+    <div id="chart"></div>
 
-  {{more_html|safe}}
+    <!-- Table -->
+    <div class="table-container">
+      {{ more_html|safe }}
+    </div>
+  </div>
+
+  <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
+  <script type='text/javascript'>
+    var graphs = {{graphJSON | safe}};
+    var layout = {
+      title: 'Responsive to window\'s size!',
+      font: {size: 18},
+    };
+    var config = {responsive: true};
+    Plotly.newPlot('chart', graphs, layout, config);
+  </script>
 </body>
-<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
-<script type='text/javascript'>
-
-  var graphs = {{graphJSON | safe}};
-  var trace1 = {
-    type: 'bar',
-    x: [1, 2, 3, 4],
-    y: [5, 10, 2, 8],
-    marker: {
-        color: '#C8A2C8',
-        line: {
-            width: 2.5
-        }
-    }
-  };
-
-  var data = [ trace1 ];
-
-  var layout = { 
-    title: 'Responsive to window\'s size!',
-    font: {size: 18}
-  };
-
-  var config = {responsive: true}
-
-  Plotly.newPlot('chart', graphs, layout, config );
-
-
-</script>
 </html>
+

@@ -26,7 +26,6 @@ class locationDB:
         # Convert the fips column to a string with leading zeros
         self.fips.fips = self.fips.fips.astype(str).str.zfill(5)
 
-        
         self.engine = create_engine(f"sqlite:///{db_name}", echo=False, future=True) 
         self.conn = self.engine.connect()
         # self.conn.execution_options(preserve_rowcount=True)
