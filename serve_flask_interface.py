@@ -3,13 +3,14 @@
 from datetime import datetime, timedelta, date, timezone
 from urllib.request import Request, urlopen
 from dotenv import load_dotenv
-from flask import Flask, render_template, Response, request, redirect, url_for
+from flask import Flask, render_template, Response, request, redirect, url_for, abort, make_response
 from flask_classful import FlaskView, route
 from flask_cors import CORS, cross_origin
 from flask_googlemaps import GoogleMaps, Map
 from json import dumps
 from plotly import utils
 from urllib.request import urlopen
+from functools import wraps
 import config
 import requests
 import geopandas as gpd
@@ -29,24 +30,55 @@ import xmltodict
 import dateutil.parser
 import pytz
 from flask_httpauth import HTTPBasicAuth
-from werkzeug.security import generate_password_hash, check_password_hash
+# from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 
-auth = HTTPBasicAuth()
+# auth = HTTPBasicAuth()
 
-password = os.environ['PASSWORD']
-users = {
-    "admin": generate_password_hash(password),
-    "benjamin": generate_password_hash(password),
-}
+# password = os.environ['PASSWORD']
+# users = {
+#     "admin": generate_password_hash(password),
+#     "benjamin": generate_password_hash(password),
+# }
 
-@auth.verify_password
-def verify_password(username, password):
-    if username in users and \
-            check_password_hash(users.get(username), password):
-        return username
+# @auth.verify_password
+# def verify_password(username, password):
+#     if username in users and \
+#            check_password_hash(users.get(username), password):
+#        return username
+
+AUTHELIA_URL='https://auth.exploretheworld.tech'
+
+def authelia_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # 1. Grab the Authelia cookie from the incoming request
+        authelia_cookie = request.cookies.get('authelia_session')
+        
+        if not authelia_cookie:
+            # 2. Redirect to Authelia if no cookie is found
+            # 'rd' tells Authelia where to return the user after login
+            return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+
+        # 3. (Optional but Recommended) Verify the cookie with Authelia's API
+        # This prevents someone from just making up a fake cookie
+        verify_url = f"{AUTHELIA_URL}/api/verify?rd={request.url}"
+        try:
+            response = requests.get(verify_url, cookies={'authelia_session': authelia_cookie}, timeout=2)
+            if response.status_code != 200:
+                # Cookie exists but Authelia says it's expired or logged out
+                return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+
+        except requests.exceptions.RequestException:
+            # If Authelia is down, fail safe and deny access
+            abort(503)
+
+        return f(*args, **kwargs)
+    return decorated_function
 
 load_dotenv()
 
@@ -170,7 +202,7 @@ class FlaskApp(FlaskView):
         return table_html
 
     @route('/state_view', methods=['POST', 'GET'])
-    @auth.login_required
+    @authelia_required
     def serve_state_view(self):
         abbrev_to_state = config.abbrev_to_us_state
         state_code = request.values['state'].upper()
@@ -235,7 +267,7 @@ class FlaskApp(FlaskView):
                                more_html=state_urls)
 
     @route('/counties')
-    @auth.login_required
+    @authelia_required
     def serve_county_graph(self):
 
         # Check whether the precomputed graph is up to date.
@@ -273,7 +305,7 @@ class FlaskApp(FlaskView):
             # return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
 
     @route('/countries')
-    @auth.login_required
+    @authelia_required
     def serve_country_graph(self):
 
         country_df = self.database.get_visited_countries()
@@ -311,7 +343,7 @@ class FlaskApp(FlaskView):
 
 
     @route('/states')
-    @auth.login_required
+    @authelia_required
     def serve_state_graph(self):
 
         state_df = self.database.get_state_visits_dataframe()
@@ -428,7 +460,7 @@ class FlaskApp(FlaskView):
 
 
     @route('/', methods=['GET', 'POST'])
-    @auth.login_required
+    @authelia_required
     @cross_origin(origin='*',headers=['Content-Type','Authorization'])
     def main_map(self):
 
@@ -703,6 +735,21 @@ class FlaskApp(FlaskView):
 
             return redirect(url_for('FlaskApp:main_map'))
         return render_template('flight_log_form.html')
+
+    @route('/logout')
+    def logout(self):
+        # 1. Clear any local Flask session data if you use it
+        # session.clear() 
+        target = f"{AUTHELIA_URL}/logout?rd={request.url_root}"
+        response = make_response(redirect(target))
+    
+        # 2. Explicitly clear the cookie on the browser
+        # Replace 'example.com' with your actual root domain
+        response.set_cookie('authelia_session', '', expires=0, domain='.exploretheworld.tech')
+    
+        # 2. Redirect to Authelia's logout, which then sends them back to your app
+        # After Authelia logs out, the user will be unauthenticated next time they visit.
+        return response
 
 
 # This weird technique, and not having an

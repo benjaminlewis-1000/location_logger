@@ -105,3 +105,24 @@ table {
     position: relative;
     border: 1px solid;
 }
+
+.top-right-nav {
+  position: absolute;
+  top: 20px;
+  right: 60px;
+  z-index: 1000; /* Ensures it stays above the map */
+}
+
+.logout-btn {
+  background-color: #f44336; /* Red color */
+  color: white;
+  padding: 10px 15px;
+  text-decoration: none;
+  border-radius: 5px;
+  font-family: sans-serif;
+  font-weight: bold;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+.logout-btn:hover {
+  background-color: #d32f2f;
+}

@@ -9,6 +9,11 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
   </head>
   <body>
+
+     <div class="top-right-nav">
+       <a href="/logout" class="logout-btn">Logout</a>
+     </div>
+
      {{map.html}}
 
       {% if delete  is sameas true %}
