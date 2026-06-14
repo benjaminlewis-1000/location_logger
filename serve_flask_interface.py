@@ -675,7 +675,7 @@ class FlaskApp(FlaskView):
             url = request.form['flight_kml']
 
             if not test:
-                if 'www.flightaware.com' not in url:
+                if 'flightaware.com' not in url:
                     return render_template('flight_log_form.html', message=f'Non flightaware url: {url}')
 
                 try:
