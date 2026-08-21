@@ -24,6 +24,8 @@ import os
 import pandas as pd
 import plotly
 import plotly.express as px
+import plotly.graph_objects as go
+from shapely.ops import transform as shapely_transform
 import re
 import requests
 import time
@@ -98,6 +100,51 @@ def authelia_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
+def _wrap_lon(lon):
+    # Normalize to [-180, 180). Needed because Alaska's Aleutian
+    # Islands cross the antimeridian -- some are recorded as ~-179
+    # and others as ~+179, which are geographically adjacent but
+    # numerically far apart unless unwrapped/rewrapped consistently.
+    return ((lon + 180) % 360) - 180
+
+def _mercator_y(lat_deg):
+    lat_rad = math.radians(max(min(lat_deg, 85.05), -85.05))
+    return math.log(math.tan(math.pi / 4 + lat_rad / 2))
+
+def _mercator_center_lat(min_lat, max_lat):
+    # The visual midpoint of a lat range under Mercator is not the
+    # simple degree average -- Mercator stretches increasingly toward
+    # the poles, so a naive average sits off-center (biased toward the
+    # equator relative to how the range actually renders). Matters
+    # most at high latitudes, e.g. Alaska's ~54-71N span.
+    y_mid = (_mercator_y(min_lat) + _mercator_y(max_lat)) / 2
+    return math.degrees(2 * math.atan(math.exp(y_mid)) - math.pi / 2)
+
+def _fit_zoom(bounds, box_width_px, box_height_px, padding=0.85):
+    # Zoom level such that a lon/lat bounding box fits within a given
+    # pixel-size box, accounting for the Mercator projection's
+    # latitude-dependent vertical scale (a naive degrees-of-latitude
+    # calculation would be wrong -- Mercator stretches vertically near
+    # the poles). box_width_px/box_height_px are necessarily a fixed
+    # assumption of the actual rendered container size, since that
+    # isn't known server-side; tuned for a typical desktop window.
+    min_lon, min_lat, max_lon, max_lat = bounds
+    lon_span = max_lon - min_lon
+    y_span = _mercator_y(max_lat) - _mercator_y(min_lat)
+    zoom_x = math.log2((box_width_px * padding * 360) / (lon_span * 256))
+    zoom_y = math.log2((box_height_px * padding * 2 * math.pi) / (y_span * 256))
+    return min(zoom_x, zoom_y)
+
+def _pad_bounds(bounds, pad_degrees):
+    min_lon, min_lat, max_lon, max_lat = bounds
+    return dict(
+            west=_wrap_lon(min_lon - pad_degrees),
+            east=_wrap_lon(max_lon + pad_degrees),
+            south=max(min_lat - pad_degrees, -85.0),
+            north=min(max_lat + pad_degrees, 85.0),
+        )
+
 load_dotenv()
 
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
@@ -124,6 +171,33 @@ class FlaskApp(FlaskView):
         # Edit GEO_ID field to remove the leading values
         for cc in range(len(cls.counties['features'])):
             cls.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', cls.counties['features'][cc]['properties']['GEO_ID'])
+
+        # Precompute lon/lat bounds for the Alaska/Hawaii inset maps,
+        # so their default center/zoom and pan limits are derived from
+        # the actual geography instead of guessed constants.
+        counties_gdf = gpd.GeoDataFrame.from_features(cls.counties['features'])
+        ak_gdf = counties_gdf[counties_gdf['GEO_ID'].str.startswith('02')].copy()
+        # Unwrap the Aleutians across the antimeridian (see _wrap_lon)
+        # before taking bounds, or the islands on either side of 180
+        # longitude make Alaska look like it spans the whole globe.
+        ak_gdf['geometry'] = ak_gdf['geometry'].apply(
+                lambda geom: shapely_transform(lambda x, y: (x - 360 if x > 0 else x, y), geom))
+        # Aleutians West alone drags the bounds out to -187 (every
+        # other AK county stays within -173 to -141) -- excluded here
+        # so the inset's default zoom/pan fits the bulk of the state
+        # instead of being dominated by one remote, thinly-populated
+        # census area. It still renders normally on the map itself,
+        # just outside this inset's default pan range.
+        ak_fit_gdf = ak_gdf[ak_gdf['NAME'] != 'Aleutians West']
+        cls.ak_bounds = tuple(ak_fit_gdf.total_bounds)
+        cls.hi_bounds = tuple(counties_gdf[counties_gdf['GEO_ID'].str.startswith('15')].total_bounds)
+        # 02/15 = AK/HI (their own insets); 72/78/66/60/69 = Puerto
+        # Rico/Virgin Islands/Guam/American Samoa/Northern Mariana --
+        # present in the county data and otherwise drags the "fit the
+        # continental US" bounds far south/east.
+        non_conti_fips = ['02', '15', '72', '78', '66', '60', '69']
+        is_conti = ~counties_gdf['GEO_ID'].str[:2].isin(non_conti_fips)
+        cls.conti_bounds = tuple(counties_gdf[is_conti].total_bounds)
 
         cls.database = location_db.locationDB(db_name=config.database_location, \
                                     fips_file = config.county_fips_file, \
@@ -185,11 +259,106 @@ class FlaskApp(FlaskView):
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
 
-        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS",  color='year',
-                                   color_continuous_scale=self.colorscale_county,
-                                   # range_color=(dmin, dmax),
-                                   scope="usa"
-                                  )
+        # county_df['year'] is -1 for never-visited, else (real year -
+        # 2000) -- see location_db.get_county_visits_dataframe(). Used
+        # to bound the client-side year slider.
+        visited_years = county_df.loc[county_df['year'] > -1, 'year']
+        if len(visited_years) > 0:
+            self.year_min = int(visited_years.min()) + 2000
+            self.year_max = int(visited_years.max()) + 2000
+        else:
+            self.year_min = self.year_max = datetime.now().year
+
+        # Three separate mapbox subplots (continental US, plus small
+        # Alaska/Hawaii insets) instead of a single geo/choropleth
+        # trace. A geo trace with scope="usa" is a static, fixed-aspect
+        # SVG projection -- it always letterboxes inside a container
+        # whose shape doesn't match, and panning/zooming only moves
+        # content within that same fixed-size canvas, which is what
+        # made the map look "stuck in a box" no matter how far zoomed.
+        # A mapbox trace is a real pannable/zoomable tile map that
+        # fills its domain at any aspect ratio -- but mapbox has no
+        # native inset concept the way scope="usa"'s Albers projection
+        # does, so Alaska/Hawaii need their own small subplots rather
+        # than rendering (correctly, but uselessly) at their true,
+        # far-away location on the continental map.
+        conti_df = county_df[~county_df['state'].isin(['AK', 'HI'])]
+        ak_df = county_df[county_df['state'] == 'AK']
+        hi_df = county_df[county_df['state'] == 'HI']
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=conti_df['FIPS'], z=conti_df['year'],
+                coloraxis='coloraxis', subplot='mapbox',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=ak_df['FIPS'], z=ak_df['year'],
+                coloraxis='coloraxis', subplot='mapbox2',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=hi_df['FIPS'], z=hi_df['year'],
+                coloraxis='coloraxis', subplot='mapbox3',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+
+        # Inset box sizes (figure-fraction domains) and center/zoom
+        # fit to the actual state bounds, computed against an assumed
+        # reference container size -- the real rendered size isn't
+        # known server-side, so this is tuned for a typical desktop
+        # window rather than being pixel-exact on every device.
+        ref_chart_px = (1400, 800)
+        ak_domain = dict(x=[0.01, 0.28], y=[0.02, 0.42])
+        hi_domain = dict(x=[0.31, 0.50], y=[0.02, 0.24])
+
+        ak_box_px = (ref_chart_px[0] * (ak_domain['x'][1] - ak_domain['x'][0]),
+                     ref_chart_px[1] * (ak_domain['y'][1] - ak_domain['y'][0]))
+        hi_box_px = (ref_chart_px[0] * (hi_domain['x'][1] - hi_domain['x'][0]),
+                     ref_chart_px[1] * (hi_domain['y'][1] - hi_domain['y'][0]))
+
+        ak_zoom = _fit_zoom(self.ak_bounds, *ak_box_px)
+        hi_zoom = _fit_zoom(self.hi_bounds, *hi_box_px)
+        ak_center = dict(lon=(self.ak_bounds[0] + self.ak_bounds[2]) / 2,
+                          lat=_mercator_center_lat(self.ak_bounds[1], self.ak_bounds[3]))
+        hi_center = dict(lon=(self.hi_bounds[0] + self.hi_bounds[2]) / 2,
+                          lat=_mercator_center_lat(self.hi_bounds[1], self.hi_bounds[3]))
+
+        # Limit how far each inset can be panned/zoomed out to roughly
+        # a few degrees past the state's real boundary, rather than
+        # letting a small inset pan off into empty ocean.
+        ak_pan_bounds = _pad_bounds(self.ak_bounds, pad_degrees=3)
+        hi_pan_bounds = _pad_bounds(self.hi_bounds, pad_degrees=3)
+
+        fig.update_layout(
+                # showscale=False: replaced by the interactive year
+                # slider below, which does the colorbar's old job.
+                coloraxis=dict(colorscale=self.colorscale_county, showscale=False),
+                mapbox=dict(
+                        style='carto-positron',
+                        center=dict(lat=39.5, lon=-98.35),
+                        zoom=3.3,
+                        domain=dict(x=[0, 1], y=[0, 1]),
+                    ),
+                # Small insets in the bottom-left corner, same spot
+                # the usual USA-map convention places them.
+                mapbox2=dict(
+                        style='carto-positron',
+                        center=ak_center,
+                        zoom=ak_zoom,
+                        domain=ak_domain,
+                        bounds=ak_pan_bounds,
+                    ),
+                mapbox3=dict(
+                        style='carto-positron',
+                        center=hi_center,
+                        zoom=hi_zoom,
+                        domain=hi_domain,
+                        bounds=hi_pan_bounds,
+                    ),
+            )
+
         fig = self.__set_map_layout(fig)
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
@@ -308,11 +477,25 @@ class FlaskApp(FlaskView):
 
         visited_string = f' - {num_visited}/{self.num_counties} | {num_visited / self.num_counties * 100:.2f}%'
 
-        return render_template('notdash.html', 
-                graphJSON=self.template, 
-                stat_string=visited_string, 
-                title='Visited Counties', 
-                page_title='OwnTracks - Visited Counties')
+        # The server can't know the visitor's actual screen size, so
+        # the zoom/center baked into the figure above is only a
+        # reasonable first-paint guess (tuned for a desktop window).
+        # These bounds let the page correct each subplot's zoom
+        # client-side, against its real rendered pixel size, right
+        # after the map draws.
+        mapbox_bounds_json = json.dumps({
+                'mapbox': list(map(float, self.conti_bounds)),
+                'mapbox2': list(map(float, self.ak_bounds)),
+                'mapbox3': list(map(float, self.hi_bounds)),
+                'yearRange': [self.year_min, self.year_max],
+            })
+
+        return render_template('notdash.html',
+                graphJSON=self.template,
+                stat_string=visited_string,
+                title='Visited Counties',
+                page_title='OwnTracks - Visited Counties',
+                mapbox_bounds_json=mapbox_bounds_json)
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/log_country', methods=['POST', 'GET'])

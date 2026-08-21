@@ -193,7 +193,11 @@
       top: 0;
       left: 0;
       width: 100vw;
-      height: 100vh;
+      height: 100vh;   /* fallback for browsers without svh support */
+      height: 100svh;  /* "small" viewport height -- the guaranteed-visible
+                          size, unlike 100vh which on mobile is often the
+                          *largest* possible size (address bar hidden) and
+                          can extend below what's actually on screen */
       z-index: 0;
     }
 
@@ -203,6 +207,52 @@
       position: relative;
       z-index: 1;
       background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* Year slider: replaces the old static colorbar. Portrait gets a
+       horizontal bar in the stacked header (matches the other rows);
+       landscape floats it vertically on the right edge instead, since
+       landscape screens are short on vertical space to spare. */
+    body.map-only .year-slider-bar {
+      position: relative;
+      z-index: 1;
+      background: rgba(255, 255, 255, 0.9);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.75rem;
+      box-sizing: border-box;
+      font-size: 0.85rem;
+    }
+
+    body.map-only .year-slider-bar input[type="range"] {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    body.map-only .year-slider-value {
+      flex: 0 0 auto;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    @media (orientation: landscape) {
+      body.map-only .year-slider-bar {
+        position: fixed;
+        top: 50%;
+        right: 0.5rem;
+        transform: translateY(-50%);
+        flex-direction: column;
+        width: auto;
+        height: 220px;
+        border-radius: 8px;
+        z-index: 2;
+      }
+
+      body.map-only .year-slider-bar input[type="range"] {
+        writing-mode: vertical-lr;
+        width: 8px;
+      }
     }
   </style>
 </head>
@@ -230,6 +280,14 @@
     <h1>{{title}} {{stat_string}}</h1>
   </div>
 
+  <!-- Year slider: cumulative "visited by year X" filter -->
+  {% if mapbox_bounds_json %}
+  <div class="year-slider-bar">
+    <span class="year-slider-value" id="yearSliderValue">&nbsp;</span>
+    <input type="range" id="yearSlider" step="1">
+  </div>
+  {% endif %}
+
   <!-- Plotly chart -->
   <div id="chart"></div>
 
@@ -244,7 +302,156 @@
   <script type='text/javascript'>
     var graphs = {{graphJSON | safe}};
     var config = {responsive: true, displaylogo: false, scrollZoom: true, displayModeBar: false};
-    Plotly.newPlot('chart', graphs.data, graphs.layout, config);
+    var plotReady = Plotly.newPlot('chart', graphs.data, graphs.layout, config);
+
+    {% if mapbox_bounds_json %}
+    // The zoom baked into the figure server-side is only a guess
+    // (the server doesn't know the visitor's actual screen size) --
+    // refit each mapbox subplot's zoom against its real rendered
+    // pixel size once the page knows it.
+    (function() {
+      var mapBounds = {{ mapbox_bounds_json | safe }};
+
+      function mercatorY(latDeg) {
+        var latRad = Math.max(Math.min(latDeg, 85.05), -85.05) * Math.PI / 180;
+        return Math.log(Math.tan(Math.PI / 4 + latRad / 2));
+      }
+
+      function fitZoom(bounds, boxWidthPx, boxHeightPx, padding) {
+        padding = padding || 0.85;
+        var lonSpan = bounds[2] - bounds[0];
+        var ySpan = mercatorY(bounds[3]) - mercatorY(bounds[1]);
+        var zoomX = Math.log2((boxWidthPx * padding * 360) / (lonSpan * 256));
+        var zoomY = Math.log2((boxHeightPx * padding * 2 * Math.PI) / (ySpan * 256));
+        return Math.min(zoomX, zoomY);
+      }
+
+      function refitMaps() {
+        var chartDiv = document.getElementById('chart');
+        var chartW = chartDiv.clientWidth;
+        var chartH = chartDiv.clientHeight;
+
+        // Plotly.relayout doesn't reliably resize a mapbox subplot's
+        // underlying map canvas when its domain changes after the
+        // initial draw (zoom-only changes are fine with relayout;
+        // domain changes are not) -- Plotly.react with a full new
+        // layout is the documented way to handle that kind of
+        // structural change.
+        var newLayout = JSON.parse(JSON.stringify(graphs.layout));
+
+        // Continental map: left at its server-set zoom (3) and full
+        // domain -- it's not being fit to a bounding box, so there's
+        // nothing to correct here.
+
+        // AK/HI insets: equal-size square boxes, sized as a
+        // percentage of the smaller viewport dimension so they scale
+        // up on a bigger desktop window instead of staying phone-sized
+        // (a domain of equal x/y *fractions* would not itself be
+        // square unless the viewport is square). Once the box is a
+        // known square, the same fitZoom used above just works -- it
+        // already picks whichever axis (lon or lat) is the tighter
+        // constraint. A looser padding (more margin) than the
+        // continental map's default, since a snug fit was clipping
+        // Hawaii's Big Island / Alaska's North Slope.
+        var squarePx = Math.min(chartW, chartH) * 0.20;
+        var marginPx = squarePx * 0.08;
+        var insets = [
+          {key: 'mapbox2', bounds: mapBounds.mapbox2, x0: marginPx},
+          {key: 'mapbox3', bounds: mapBounds.mapbox3, x0: marginPx * 2 + squarePx},
+        ];
+        insets.forEach(function(inset) {
+          if (!inset.bounds || !newLayout[inset.key]) return;
+          var x0 = inset.x0, x1 = inset.x0 + squarePx;
+          var y0 = marginPx, y1 = marginPx + squarePx;
+          newLayout[inset.key].domain = {x: [x0 / chartW, x1 / chartW], y: [y0 / chartH, y1 / chartH]};
+          newLayout[inset.key].zoom = fitZoom(inset.bounds, squarePx, squarePx, 0.45);
+        });
+
+        return Plotly.react('chart', graphs.data, newLayout, config);
+      }
+
+      // Serialize every refit through one promise chain -- calling
+      // Plotly.react again on the same mapbox subplots before a prior
+      // call has finished can corrupt their rendering (this is likely
+      // what made the insets vanish on mobile: the browser fires a
+      // resize event almost immediately after load as the address bar
+      // collapses, which was racing with the initial refit).
+      var refitChain = Promise.resolve();
+      function scheduleRefit() {
+        refitChain = refitChain.then(refitMaps).catch(function(err) {
+          console.error('refitMaps failed:', err);
+        });
+      }
+
+      // Plotly.newPlot returns a promise that resolves once the plot
+      // (including loading the mapbox tile styles) is actually ready;
+      // calling react()/relayout() before that resolves can silently
+      // no-op for mapbox subplots.
+      plotReady.then(scheduleRefit).catch(function(err) {
+        console.error('initial plot failed:', err);
+      });
+
+      // Debounced: mobile viewport-height changes (address bar
+      // show/hide) can fire several resize events in quick succession.
+      var resizeTimer = null;
+      window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(scheduleRefit, 250);
+      });
+
+      // Year slider: cumulative "counties visited by year X" filter.
+      // Every county's year value is already loaded on the page (it's
+      // what drives the choropleth color), so this recolors entirely
+      // client-side via Plotly.restyle -- no server round-trip.
+      //
+      // Caveat: the underlying data only stores each county's *most
+      // recent* visit year, not every year it was visited, so a
+      // county visited in e.g. both 2015 and 2022 only "counts" as
+      // visited from 2022 onward here, not 2015. Getting that right
+      // needs a schema change to track every visit-year per county.
+      var slider = document.getElementById('yearSlider');
+      var sliderValueLabel = document.getElementById('yearSliderValue');
+
+      if (slider && mapBounds.yearRange) {
+        var YEAR_BASE = 2000;   // matches location_db.get_county_visits_dataframe()
+        var UNVISITED_Z = -1;
+        var yearMin = mapBounds.yearRange[0];
+        var yearMax = mapBounds.yearRange[1];
+
+        slider.min = yearMin;
+        slider.max = yearMax;
+        slider.value = yearMax;
+        sliderValueLabel.textContent = 'Through ' + yearMax;
+
+        // Snapshot the true, unfiltered year for each trace so every
+        // slider move recomputes from the original data rather than
+        // compounding on top of a previous filter.
+        var originalZ = graphs.data.map(function(trace) {
+          return trace.z ? trace.z.slice() : null;
+        });
+
+        function applyYearFilter() {
+          var cutoff = parseInt(slider.value, 10);
+          sliderValueLabel.textContent = 'Through ' + cutoff;
+          var cutoffOffset = cutoff - YEAR_BASE;
+
+          var traceIndices = [];
+          var newZ = [];
+          originalZ.forEach(function(z, idx) {
+            if (!z) return;
+            traceIndices.push(idx);
+            newZ.push(z.map(function(v) {
+              return (v > UNVISITED_Z && v > cutoffOffset) ? UNVISITED_Z : v;
+            }));
+          });
+
+          Plotly.restyle('chart', {z: newZ}, traceIndices);
+        }
+
+        slider.addEventListener('input', applyYearFilter);
+      }
+    })();
+    {% endif %}
   </script>
 </body>
 </html>
