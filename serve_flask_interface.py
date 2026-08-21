@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, date, timezone
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 from dotenv import load_dotenv
 from flask import Flask, render_template, Response, request, redirect, url_for, abort, make_response
 from flask_classful import FlaskView, route
@@ -53,25 +54,42 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 AUTHELIA_URL='https://auth.exploretheworld.tech'
 
+def _clean_redirect_target():
+    # Build the URL to send Authelia as 'rd', with any existing 'rd'
+    # param stripped out. Without this, a failed verification nests the
+    # previous redirect URL into the new one, and the URL grows without
+    # bound on repeated failures until it exceeds the server's request
+    # line limit.
+    other_args = request.args.to_dict()
+    other_args.pop('rd', None)
+    if other_args:
+        return f"{request.base_url}?{urlencode(other_args)}"
+    return request.base_url
+
 def authelia_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        clean_url = _clean_redirect_target()
+
         # 1. Grab the Authelia cookie from the incoming request
         authelia_cookie = request.cookies.get('authelia_session')
-        
+
         if not authelia_cookie:
             # 2. Redirect to Authelia if no cookie is found
             # 'rd' tells Authelia where to return the user after login
-            return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+            return redirect(f"{AUTHELIA_URL}/?rd={clean_url}")
 
         # 3. (Optional but Recommended) Verify the cookie with Authelia's API
         # This prevents someone from just making up a fake cookie
-        verify_url = f"{AUTHELIA_URL}/api/verify?rd={request.url}"
+        verify_url = f"{AUTHELIA_URL}/api/verify?rd={clean_url}"
         try:
-            response = requests.get(verify_url, cookies={'authelia_session': authelia_cookie}, timeout=2)
+            # allow_redirects=False: we only care about the status code here.
+            # Following Authelia's own redirect chain server-side was the
+            # actual cause of the exponential 'rd' nesting bug.
+            response = requests.get(verify_url, cookies={'authelia_session': authelia_cookie}, timeout=2, allow_redirects=False)
             if response.status_code != 200:
                 # Cookie exists but Authelia says it's expired or logged out
-                return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+                return redirect(f"{AUTHELIA_URL}/?rd={clean_url}")
 
         except requests.exceptions.RequestException:
             # If Authelia is down, fail safe and deny access
