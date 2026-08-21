@@ -5,7 +5,6 @@ import numpy as np
 
 from flask import Flask, request, Response, session, redirect, render_template, request, abort, jsonify
 from flask_cors import CORS, cross_origin
-from flask_session import Session
 import jsonpickle
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float
 from sqlalchemy import create_engine

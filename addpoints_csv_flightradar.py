@@ -2,7 +2,6 @@
 from calendar import timegm
 from datetime import datetime, timedelta
 from flask import Flask, request, Response, session, redirect, render_template, request, abort, jsonify
-from flask_session import Session
 from sqlalchemy import create_engine
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float
 from sqlalchemy.sql import select

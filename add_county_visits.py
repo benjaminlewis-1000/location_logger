@@ -6,9 +6,6 @@ from sqlalchemy.sql import select
 import geopy.distance
 
 import geopandas as gpd
-import geoplot.crs as gcrs
-import geoplot as gplt
-import matplotlib.pyplot as plt
 from shapely.geometry import Point
 from tqdm import tqdm
 import pandas as pd
