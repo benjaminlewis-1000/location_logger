@@ -1,46 +1,131 @@
 <!doctype html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
   <title>{{page_title}}</title>
   <style>
-    body {
+    html, body {
       font-family: Arial, sans-serif;
       margin: 0;
       padding: 0;
       text-align: center;
     }
 
-    h1 {
-      margin-top: 1rem;
-      text-align: initial;
-      margin-left: 2rem;
+    /* ===== Base layout: normal top-to-bottom page. Used as-is on
+       pages with a table (states/countries/state_view) -- solid
+       backgrounds throughout, map sized to a reasonable chunk of the
+       page rather than filling it. The map-only page (counties, no
+       table) overrides this below into a full-bleed background. ===== */
+
+    /* Nav buttons + Logout: one row, all the same height. Overrides
+       example.css's position/width rules for .btn (fixed 90px) and
+       .button-container/.top-right-nav (position: absolute), which
+       otherwise pull them out of normal document flow. */
+    .top-bar {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 0.4rem;
+      background: #fff;
+      padding: 0.4rem 0.5rem;
+      box-sizing: border-box;
     }
 
-    .button-container {
-      margin: -1rem 1.5rem;
+    .top-bar .btn,
+    .top-bar .logout-btn {
+      position: static;
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      margin: 0;
+      padding: 8px 4px;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
     }
 
-    .content-wrapper {
-      max-width: 90vw;   /* keep content within viewport */
-      margin: 4rem auto;    /* center horizontally */
+    /* "Add Country" row: overrides example.css's #country-form/.form-inline
+       rules (fixed position, and a column layout below 800px) so it
+       stays one row with the input flexing to fill remaining space. */
+    .country-bar {
+      background: #fff;
+      padding: 0.4rem 0.5rem;
+      box-sizing: border-box;
     }
 
-    .plotly-container {
-      display: flex; /* Enables Flexbox */
-      justify-content: center; /* Horizontally centers content */
-      align-items: center; /* Vertically centers content (optional) */
-    }
-
-    #chart {
-      /* width: 100vw;        /* chart only takes 80% of screen width */
+    .country-bar #country-form {
+      position: static;
+      top: auto;
+      left: auto;
+      height: auto;
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 0.4rem;
+      max-width: 480px;
       margin: 0 auto;
     }
 
+    .country-bar #country-form label {
+      flex: 0 0 auto;
+      margin: 0;
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+
+    .country-bar #country-form input {
+      flex: 1 1 auto;
+      min-width: 0;
+      margin: 0;
+      padding: 6px 8px;
+      font-size: 0.85rem;
+    }
+
+    .country-bar #country-form button {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+    }
+
+    .title-bar {
+      background: #fff;
+      padding: 0.4rem 0.75rem;
+      box-sizing: border-box;
+    }
+
+    h1 {
+      margin: 0;
+      text-align: initial;
+      font-size: 1.1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #chart {
+      width: 100%;
+      height: 55vh;
+      min-height: 320px;
+      box-sizing: border-box;
+    }
+
     .table-container {
-      width: 60vw;
-      margin: 2rem auto;
-      /*overflow-x: auto;   /* allow scroll if absolutely necessary */
+      width: 100%;
+      max-width: 900px;
+      margin: 1rem auto 2rem;
+      background: #fff;
+      padding: 0 1rem 1rem;
+      box-sizing: border-box;
+      overflow-x: auto;
     }
 
     .dataframe {
@@ -48,13 +133,8 @@
     }
 
     .table-container table {
-      width: 60vw;
       margin: 0 auto;
       border-collapse: collapse;
-    }
-
-    .main-svg .svg-container { /* Overwrite Python properties */
-      width: 100%;
     }
 
     .table-container th,
@@ -63,25 +143,81 @@
       padding: 8px 12px;
       text-align: center;
     }
+
+    /* State list as a responsive card grid: one column when narrow
+       (mobile), auto-fitting to more columns as width allows (desktop)
+       -- driven entirely by available width, no device detection. */
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.6rem;
+    }
+
+    .state-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0.9rem;
+      background: #f5f7fa;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .state-card:hover {
+      background: #eaeef3;
+    }
+
+    .state-card-name {
+      font-weight: bold;
+      text-align: left;
+    }
+
+    .state-card-stat {
+      color: #555;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    /* ===== map-only override: full-bleed background map, used only
+       on pages with no table (the map itself is the entire page). ===== */
+    body.map-only {
+      height: 100%;
+    }
+
+    body.map-only #chart {
+      touch-action: none;   /* let Plotly's own pinch/pan handle mobile gestures */
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+    }
+
+    body.map-only .top-bar,
+    body.map-only .country-bar,
+    body.map-only .title-bar {
+      position: relative;
+      z-index: 1;
+      background: rgba(255, 255, 255, 0.9);
+    }
   </style>
 </head>
-<body>
-  <!-- Title -->
-  <h1>{{title}} {{stat_string}}</h1>
-
-
-  <div class="top-right-nav">
-    <a href="/logout" class="logout-btn">Logout</a>
-  </div>
-
-
-  <!-- Buttons + form -->
-  <div class="button-container">
+<body class="{{ 'has-table' if more_html else 'map-only' }}">
+  <!-- Nav buttons + Logout: one clean row -->
+  <div class="top-bar">
     <a class='btn' href="counties">Counties</a>
     <a class='btn' href="states">States</a>
     <a class='btn' href="countries">Countries</a>
     <a class='btn' href="/">Map</a>
+    <a href="/logout" class="logout-btn">Logout</a>
+  </div>
 
+  <!-- Add Country: one clean row -->
+  <div class="country-bar">
     <form class="form-inline" id="country-form" action="/log_country">
       <label for="start">Add Country</label>
       <input type="text" id="start" placeholder="<Country Name or Code>" name="country">
@@ -89,26 +225,26 @@
     </form>
   </div>
 
-  <!-- Plotly chart -->
-  <div class="content-wrapper">
-    <div id="chart"></div>
-
-    <!-- Table -->
-    <div class="table-container">
-      {{ more_html|safe }}
-    </div>
+  <!-- Title: one clean text line -->
+  <div class="title-bar">
+    <h1>{{title}} {{stat_string}}</h1>
   </div>
+
+  <!-- Plotly chart -->
+  <div id="chart"></div>
+
+  <!-- Table -->
+  {% if more_html %}
+  <div class="table-container">
+    {{ more_html|safe }}
+  </div>
+  {% endif %}
 
   <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
   <script type='text/javascript'>
     var graphs = {{graphJSON | safe}};
-    var layout = {
-      title: 'Responsive to window\'s size!',
-      font: {size: 18},
-    };
-    var config = {responsive: true};
-    Plotly.newPlot('chart', graphs, layout, config);
+    var config = {responsive: true, displaylogo: false, scrollZoom: true, displayModeBar: false};
+    Plotly.newPlot('chart', graphs.data, graphs.layout, config);
   </script>
 </body>
 </html>
-

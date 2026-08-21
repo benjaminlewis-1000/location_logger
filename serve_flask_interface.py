@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, date, timezone
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 from dotenv import load_dotenv
 from flask import Flask, render_template, Response, request, redirect, url_for, abort, make_response
 from flask_classful import FlaskView, route
@@ -53,25 +54,42 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 AUTHELIA_URL='https://auth.exploretheworld.tech'
 
+def _clean_redirect_target():
+    # Build the URL to send Authelia as 'rd', with any existing 'rd'
+    # param stripped out. Without this, a failed verification nests the
+    # previous redirect URL into the new one, and the URL grows without
+    # bound on repeated failures until it exceeds the server's request
+    # line limit.
+    other_args = request.args.to_dict()
+    other_args.pop('rd', None)
+    if other_args:
+        return f"{request.base_url}?{urlencode(other_args)}"
+    return request.base_url
+
 def authelia_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        clean_url = _clean_redirect_target()
+
         # 1. Grab the Authelia cookie from the incoming request
         authelia_cookie = request.cookies.get('authelia_session')
-        
+
         if not authelia_cookie:
             # 2. Redirect to Authelia if no cookie is found
             # 'rd' tells Authelia where to return the user after login
-            return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+            return redirect(f"{AUTHELIA_URL}/?rd={clean_url}")
 
         # 3. (Optional but Recommended) Verify the cookie with Authelia's API
         # This prevents someone from just making up a fake cookie
-        verify_url = f"{AUTHELIA_URL}/api/verify?rd={request.url}"
+        verify_url = f"{AUTHELIA_URL}/api/verify?rd={clean_url}"
         try:
-            response = requests.get(verify_url, cookies={'authelia_session': authelia_cookie}, timeout=2)
+            # allow_redirects=False: we only care about the status code here.
+            # Following Authelia's own redirect chain server-side was the
+            # actual cause of the exponential 'rd' nesting bug.
+            response = requests.get(verify_url, cookies={'authelia_session': authelia_cookie}, timeout=2, allow_redirects=False)
             if response.status_code != 200:
                 # Cookie exists but Authelia says it's expired or logged out
-                return redirect(f"{AUTHELIA_URL}/?rd={request.url}")
+                return redirect(f"{AUTHELIA_URL}/?rd={clean_url}")
 
         except requests.exceptions.RequestException:
             # If Authelia is down, fail safe and deny access
@@ -86,6 +104,7 @@ cors = CORS(app, resources={r"/foo": {"origins": "*"}})
 # SESSION_TYPE = 'redis'
 app.config.from_object(__name__)
 app.config['CORS_HEADERS'] = 'Content-Type'
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 gmap_key = os.environ['GMAP_API_KEY']
 app.config['GOOGLEMAPS_KEY'] = gmap_key
 app.config['UPLOAD_FOLDER'] = "/data"
@@ -143,10 +162,15 @@ class FlaskApp(FlaskView):
                         pad=4,
                         autoexpand=True
                     ),
-                    width=1600,
-                    height=800,
             )
 
+        # Plotly allocates the geo subplot a fixed-size rectangle
+        # ("domain") within the figure that doesn't necessarily fill
+        # the whole container -- panning/zooming moves the map inside
+        # that rectangle rather than growing the rectangle itself,
+        # which is what made the map look boxed-in even once the
+        # surrounding CSS was full-bleed. Force it to the full figure.
+        fig.update_geos(domain=dict(x=[0, 1], y=[0, 1]))
 
         return fig
 
@@ -175,31 +199,31 @@ class FlaskApp(FlaskView):
 
     def _compute_table(self, county_df):
 
-        state_list = county_df['state'].unique().tolist()
-        state_names = [config.abbrev_to_us_state[st] for st in state_list]
-
         grouper = county_df[['state', 'visited']].groupby('state')
-        n_visited = grouper.sum()
-        n_total = grouper.count()
-        # Rename the column
-        n_total = n_total.rename(mapper = {'visited': 'Total'}, axis=1)
-        n_visited = n_visited.rename(mapper = {'visited': 'Visited'}, axis=1)
-        # urls = [f'state_view?state={st}' for st in state_list]
-        urls = [f"<a class='tbl_btn' href='state_view?state={st}'>View</a>" for st in state_list]
-        url_df = pd.DataFrame(list(zip(state_names, urls) ), columns=['Name', 'URL'])
-        url_df.index = state_list # list(zip(state_list, urls)))
+        n_visited = grouper.sum().rename(mapper = {'visited': 'Visited'}, axis=1)
+        n_total = grouper.count().rename(mapper = {'visited': 'Total'}, axis=1)
 
-        n_visited = n_visited.sort_index()
-        n_total = n_total.sort_index()
-        url_df = url_df.sort_index()
-        table = pd.concat((n_visited.T, n_total.T, url_df.T)).T
-        table.index = np.arange(len(table))
+        # Concatenating on axis=1 aligns both series by their shared
+        # index (state abbreviation), so this doesn't depend on both
+        # sides happening to already be sorted the same way.
+        table = pd.concat((n_visited, n_total), axis=1)
+        table['Name'] = [config.abbrev_to_us_state[st] for st in table.index]
         table = table.sort_values('Name')
 
-        table_html = table.to_html(escape=False, index=False, columns=['Name', 'Visited', 'Total', 'URL'])
-#         print(table_html)
+        # A responsive card grid instead of a plain <table>: table rows
+        # can't reflow into multiple columns via CSS, but a grid of
+        # cards can -- one per row on narrow/mobile screens, several
+        # per row on wide ones, purely from available width.
+        cards = []
+        for abbrev, row in table.iterrows():
+            cards.append(
+                f"<a class='state-card' href='state_view?state={abbrev}'>"
+                f"<span class='state-card-name'>{row['Name']}</span>"
+                f"<span class='state-card-stat'>{int(row['Visited'])}/{int(row['Total'])} counties</span>"
+                f"</a>"
+            )
 
-        return table_html
+        return "<div class='state-grid'>" + "".join(cards) + "</div>"
 
     @route('/state_view', methods=['POST', 'GET'])
     @authelia_required
