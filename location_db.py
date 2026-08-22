@@ -22,7 +22,11 @@ class locationDB:
         self.db_name = db_name
 
         self.fips = pd.read_csv(fips_file)
-        self.countries = pd.read_csv(country_file)
+        # keep_default_na=False: pandas' default NA-sentinel list
+        # includes the literal string "NA", which is Namibia's actual
+        # ISO alpha-2 code -- without this it silently reads as a
+        # missing value instead of the string "NA".
+        self.countries = pd.read_csv(country_file, keep_default_na=False)
         # Convert the fips column to a string with leading zeros
         self.fips.fips = self.fips.fips.astype(str).str.zfill(5)
 
@@ -118,6 +122,27 @@ class locationDB:
         if len(result) == 0:
             self.populate_countries()
 
+        # Repair a pre-existing data bug: pandas' default NA-sentinel
+        # list includes the literal string "NA" -- which is Namibia's
+        # real ISO alpha-2 code -- so any DB seeded before
+        # keep_default_na=False (see self.countries above) got NULL
+        # code_2/code_3 for it instead. Self-heals on every startup;
+        # a no-op once fixed, and general (not hardcoded to Namibia)
+        # in case another code collides with a pandas NA sentinel.
+        broken = select(self.world_countries.c.name).where(
+                or_(self.world_countries.c.code_2 == None, self.world_countries.c.code_3 == None))
+        broken_names = [row[0] for row in self.conn.execute(broken).fetchall()]
+        if broken_names:
+            lookup = self.countries.set_index('name')
+            for name in broken_names:
+                if name not in lookup.index:
+                    continue
+                fix = self.world_countries.update() \
+                        .where(self.world_countries.c.name == name) \
+                        .values(code_2=lookup.loc[name, 'alpha-2'], code_3=lookup.loc[name, 'alpha-3'])
+                self.conn.execute(fix)
+            self.conn.commit()
+
     def get_visited_countries(self):
 
         exists = select(self.world_countries).where(self.world_countries.c.visited == True)
@@ -125,7 +150,19 @@ class locationDB:
         data = result.fetchall()
 
         df = pd.DataFrame(data, columns=['name', 'iso_2', 'iso_3', 'visited'])
-        
+
+        return df
+
+    def get_all_countries_dataframe(self):
+        # Same shape as get_visited_countries(), but every row (needed
+        # to render the world choropleth, which colors visited vs.
+        # unvisited rather than just plotting a list of visited names).
+        all_countries = select(self.world_countries)
+        result = self.conn.execute(all_countries)
+        data = result.fetchall()
+
+        df = pd.DataFrame(data, columns=['name', 'iso_2', 'iso_3', 'visited'])
+
         return df
 
     def set_visited_country(self, identifier):
@@ -416,6 +453,14 @@ class locationDB:
         # year visited to that state.)
         # Easier to do in pandas than to try and get in SQL for me.
         result = result.drop_duplicates(subset=['state'], keep='last')
+
+        # Same -2000 convention as get_county_visits_dataframe() (-1
+        # stays -1 for "never visited"): callers rendering both
+        # counties and states through the same year-slider JS need a
+        # consistent offset, since that JS hardcodes YEAR_BASE = 2000.
+        pos_idcs = result['year'] > 0
+        if pos_idcs.any():
+            result.loc[pos_idcs, 'year'] = result['year'].apply(lambda x: x - 2000)
 
         return result
 

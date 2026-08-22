@@ -81,12 +81,21 @@
       white-space: nowrap;
     }
 
-    .country-bar #country-form input {
+    /* Wraps the input so the suggestions dropdown (absolutely
+       positioned) has something to anchor to -- takes over the flex
+       sizing the input itself used to have directly. */
+    .country-bar #country-form .country-autocomplete {
+      position: relative;
       flex: 1 1 auto;
       min-width: 0;
+    }
+
+    .country-bar #country-form input {
+      width: 100%;
       margin: 0;
       padding: 6px 8px;
       font-size: 0.85rem;
+      box-sizing: border-box;
     }
 
     .country-bar #country-form button {
@@ -94,6 +103,47 @@
       margin: 0;
       padding: 6px 10px;
       font-size: 0.85rem;
+    }
+
+    /* Add Country autocomplete dropdown -- filters client-side as you
+       type, matching name or either ISO code (see the JS below). */
+    .country-suggestions {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 2px;
+      max-height: 240px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      z-index: 5;
+      text-align: left;
+    }
+
+    .country-suggestions.open {
+      display: block;
+    }
+
+    .country-suggestion-item {
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .country-suggestion-item:hover {
+      background: #eaeef3;
+    }
+
+    .country-suggestion-code {
+      color: #777;
+      margin-left: 0.4rem;
     }
 
     .title-bar {
@@ -181,8 +231,15 @@
       white-space: nowrap;
     }
 
-    /* ===== map-only override: full-bleed background map, used only
-       on pages with no table (the map itself is the entire page). ===== */
+    /* ===== map-only override: full-bleed background map. A page with
+       no table (counties) makes the map the entire page. A page that
+       also has a table (countries) needs the .with-table shrink below
+       -- #chart is position:fixed, so at full 100svh height it covers
+       the *entire* viewport at every scroll position, not just at the
+       top. Combined with touch-action:none, that leaves literally no
+       spot on screen where a touch can start a native scroll once the
+       (non-fixed, in-flow) header bars have scrolled out of view --
+       the page gets stuck, unreachable at either end, until reload. ===== */
     body.map-only {
       height: 100%;
     }
@@ -201,12 +258,52 @@
       z-index: 0;
     }
 
+    /* Cap the map short of the full viewport so a permanent, non-map
+       strip is always on screen -- regardless of scroll position -- for
+       native touch-scroll to latch onto. Matches the table's margin-top
+       below so the table starts right where the map ends, no dead gap. */
+    body.map-only.with-table #chart {
+      height: 90vh;
+      height: 90svh;
+    }
+
     body.map-only .top-bar,
-    body.map-only .country-bar,
     body.map-only .title-bar {
       position: relative;
       z-index: 1;
       background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* Higher than .top-bar/.title-bar (and .year-slider-bar below):
+       z-index only ranks elements against siblings within the same
+       stacking context, and .country-bar is that context for the
+       autocomplete dropdown inside it (position:relative promotes it
+       to one). The dropdown's own z-index:5 only wins locally, within
+       .country-bar -- .country-bar itself was tied at z-index:1 with
+       .title-bar, and lost that tie by coming first in the DOM, so the
+       whole dropdown (bar and all) painted under the title text. */
+    body.map-only .country-bar {
+      position: relative;
+      z-index: 3;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* #chart is fixed and takes no space in the document flow, so
+       without this the table would start right under the header bars
+       and hide the map immediately instead of leaving it visible until
+       scrolled past. margin-top pushes the table down to start right
+       where the (now 90%-capped, see .with-table above) map ends;
+       position/z-index is the same "paint above the fixed map"
+       treatment as the header bars use. */
+    body.map-only.with-table .table-container {
+      position: relative;
+      z-index: 1;
+      margin-top: 90vh;
+      margin-top: 90svh;
+      padding-top: 1rem;   /* breathing room above the first row of cards --
+                               the base .table-container rule has no
+                               padding-top, so cards would otherwise sit
+                               flush against the container's top edge */
     }
 
     /* Year slider: replaces the old static colorbar. Portrait gets a
@@ -256,7 +353,7 @@
     }
   </style>
 </head>
-<body class="{{ 'has-table' if more_html else 'map-only' }}">
+<body class="{{ 'map-only' if full_bleed_map else 'has-table' }}{{ ' with-table' if full_bleed_map and more_html else '' }}">
   <!-- Nav buttons + Logout: one clean row -->
   <div class="top-bar">
     <a class='btn' href="counties">Counties</a>
@@ -270,7 +367,10 @@
   <div class="country-bar">
     <form class="form-inline" id="country-form" action="/log_country">
       <label for="start">Add Country</label>
-      <input type="text" id="start" placeholder="<Country Name or Code>" name="country">
+      <div class="country-autocomplete">
+        <input type="text" id="start" placeholder="<Country Name or Code>" name="country" autocomplete="off">
+        <div id="country-suggestions" class="country-suggestions"></div>
+      </div>
       <button type="submit">Submit</button>
     </form>
   </div>
@@ -297,6 +397,86 @@
     {{ more_html|safe }}
   </div>
   {% endif %}
+
+  <!-- Add Country autocomplete: filters the full country list
+       client-side as you type, matching name or either ISO code.
+       Independent of the map/graph JS below -- present on every page,
+       since .country-bar is in the shared top nav. -->
+  <script type='text/javascript'>
+    (function() {
+      var countryList = {{ country_list_json | safe }};
+      var input = document.getElementById('start');
+      var suggestionsBox = document.getElementById('country-suggestions');
+      if (!input || !suggestionsBox) return;
+
+      var MAX_SUGGESTIONS = 8;
+
+      function filterCountries(query) {
+        var q = query.trim().toLowerCase();
+        if (!q) return [];
+
+        var startsWith = [];
+        var contains = [];
+        countryList.forEach(function(c) {
+          var name = c.name.toLowerCase();
+          var iso2 = (c.iso_2 || '').toLowerCase();
+          var iso3 = (c.iso_3 || '').toLowerCase();
+          if (name.indexOf(q) === -1 && iso2.indexOf(q) === -1 && iso3.indexOf(q) === -1) return;
+          if (name.indexOf(q) === 0 || iso2 === q || iso3 === q) {
+            startsWith.push(c);
+          } else {
+            contains.push(c);
+          }
+        });
+        startsWith.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        contains.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        return startsWith.concat(contains).slice(0, MAX_SUGGESTIONS);
+      }
+
+      function closeSuggestions() {
+        suggestionsBox.classList.remove('open');
+        suggestionsBox.innerHTML = '';
+      }
+
+      function renderSuggestions(matches) {
+        suggestionsBox.innerHTML = '';
+        matches.forEach(function(c) {
+          var item = document.createElement('div');
+          item.className = 'country-suggestion-item';
+          item.textContent = c.name;
+          var code = document.createElement('span');
+          code.className = 'country-suggestion-code';
+          code.textContent = c.iso_3;
+          item.appendChild(code);
+          // mousedown, not click -- fires before the input's blur, so
+          // the value is set before the blur handler closes the list.
+          item.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            input.value = c.name;
+            closeSuggestions();
+          });
+          suggestionsBox.appendChild(item);
+        });
+        suggestionsBox.classList.toggle('open', matches.length > 0);
+      }
+
+      input.addEventListener('input', function() {
+        renderSuggestions(filterCountries(input.value));
+      });
+
+      input.addEventListener('focus', function() {
+        if (input.value.trim()) renderSuggestions(filterCountries(input.value));
+      });
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeSuggestions();
+      });
+
+      input.addEventListener('blur', function() {
+        setTimeout(closeSuggestions, 150);
+      });
+    })();
+  </script>
 
   <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
   <script type='text/javascript'>

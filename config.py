@@ -16,6 +16,12 @@ basic_county_json = os.path.join(config_dir, 'gz_counties_basic.json')
 
 county_fips_file = os.path.join(config_dir, 'state_and_county_fips_master.csv')
 country_file = os.path.join(config_dir, 'countries.csv')
+# World country boundaries, id'd by ISO alpha-3 code. Derived from
+# https://github.com/datasets/geo-countries (Natural Earth-based), with
+# large countries' coastlines simplified to cut file size, and a couple
+# of ISO codes the source data leaves as "-99" (France, Norway) fixed up
+# by name -- see the generation notes in CLAUDE.md.
+world_country_json = os.path.join(config_dir, 'world-countries.geojson')
 
 # These won't capture the entire county, but are designed
 # to get the bulk of the points from the county.
