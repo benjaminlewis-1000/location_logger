@@ -16,7 +16,16 @@ import sqlalchemy
 import time
 
 class locationDB:
-    """docstring for locationDB"""
+    """Wraps the SQLite DB (positions/users/counties/countries).
+
+    Standing rule: dev's DB is a one-time clone of prod's and has
+    been fully independent ever since -- nothing done to it here ever
+    reaches prod, including by merging code. Any schema change must
+    self-migrate on every startup (see the ALTER TABLE / populate_*
+    checks in __init__ below) rather than assume a new column/table
+    already exists -- prod will still be on the old schema whenever
+    this code actually reaches it.
+    """
     def __init__(self, db_name, fips_file, country_file):
         super(locationDB, self).__init__()
         self.db_name = db_name
@@ -48,6 +57,7 @@ class locationDB:
                 Column('code_2', String),
                 Column('code_3', String),
                 Column('visited', Boolean),
+                Column('flown_through', Boolean, default=False),
             )
 
         self.users = Table('users', metadata,
@@ -102,9 +112,21 @@ class locationDB:
             if 'year' not in cnames:
                 sql_insert = 'alter table counties add column year Integer default -1'
                 with self.engine.begin() as conn2:
-                    result = conn2.execute(text(sql_insert)) 
+                    result = conn2.execute(text(sql_insert))
                     conn2.commit()
-            
+
+            # Any DB that pre-dates this column (i.e. every DB except
+            # a brand new one created fresh via the Table def above)
+            # needs it added by hand -- see the standing rule in this
+            # class's docstring.
+            columns = insp.get_columns('countries')
+            cnames = [c['name'] for c in columns]
+            if 'flown_through' not in cnames:
+                sql_insert = 'alter table countries add column flown_through Boolean default False'
+                with self.engine.begin() as conn2:
+                    result = conn2.execute(text(sql_insert))
+                    conn2.commit()
+
         insp = sqlalchemy.inspect(self.engine)
 
         # See if the counties table is populated
@@ -161,20 +183,49 @@ class locationDB:
         result = self.conn.execute(all_countries)
         data = result.fetchall()
 
-        df = pd.DataFrame(data, columns=['name', 'iso_2', 'iso_3', 'visited'])
+        df = pd.DataFrame(data, columns=['name', 'iso_2', 'iso_3', 'visited', 'flown_through'])
 
         return df
 
-    def set_visited_country(self, identifier):
-        # ID can be name, 2-char code, or 3-char code. 
-        where_clause = or_(self.world_countries.c.name == identifier, 
+    def _find_country_row(self, identifier):
+        # ID can be name, 2-char code, or 3-char code. Shared by every
+        # method below that needs to locate a country row before
+        # reading or updating it -- returns (row_or_None, where_clause)
+        # so callers that go on to update can reuse the same clause
+        # rather than re-deriving it.
+        where_clause = or_(self.world_countries.c.name == identifier,
                         self.world_countries.c.code_2 == identifier,
                         self.world_countries.c.code_3 == identifier)
 
         find_country = select(self.world_countries).where(where_clause)
-        finder = self.conn.execute(find_country)
-        results = finder.fetchall()
+        results = self.conn.execute(find_country).fetchall()
         if len(results) == 0:
+            return None, where_clause
+
+        return results[0], where_clause
+
+    def get_country_status(self, identifier):
+        # Current visited/flown_through state for one country, or None
+        # if the identifier doesn't match anything. Used by /log_country
+        # to tell whether a submission is a genuine change (worth
+        # letting the client undo) or a no-op resubmit of something
+        # already set (not -- undoing that could clear a fact that's
+        # actually true from an untracked, possibly much older action).
+        row, _ = self._find_country_row(identifier)
+        if row is None:
+            return None
+
+        return {
+            'name': row.name,
+            'iso_2': row.code_2,
+            'iso_3': row.code_3,
+            'visited': bool(row.visited),
+            'flown_through': bool(row.flown_through),
+        }
+
+    def set_visited_country(self, identifier):
+        row, where_clause = self._find_country_row(identifier)
+        if row is None:
             # Invalid identifier
             return False
 
@@ -182,7 +233,59 @@ class locationDB:
                         .where(where_clause) \
                         .values(visited=True)
 
-        result = self.conn.execute(country_update)
+        self.conn.execute(country_update)
+        self.conn.commit()
+
+        return True
+
+    def set_flown_through_country(self, identifier):
+        # Same as set_visited_country, but for the weaker "flew over,
+        # didn't visit" fact -- the two are independent columns (both
+        # can be true), never cleared by one another. Display-time
+        # code is responsible for treating visited as taking priority
+        # when both are set, not this method.
+        row, where_clause = self._find_country_row(identifier)
+        if row is None:
+            # Invalid identifier
+            return False
+
+        country_update = self.world_countries.update() \
+                        .where(where_clause) \
+                        .values(flown_through=True)
+
+        self.conn.execute(country_update)
+        self.conn.commit()
+
+        return True
+
+    def unset_visited_country(self, identifier):
+        # Undo counterpart to set_visited_country. Like the setters,
+        # this just forces the one column -- callers are responsible
+        # for only calling it when that's actually the right thing to
+        # undo (see get_country_status's docstring above).
+        row, where_clause = self._find_country_row(identifier)
+        if row is None:
+            return False
+
+        country_update = self.world_countries.update() \
+                        .where(where_clause) \
+                        .values(visited=False)
+
+        self.conn.execute(country_update)
+        self.conn.commit()
+
+        return True
+
+    def unset_flown_through_country(self, identifier):
+        row, where_clause = self._find_country_row(identifier)
+        if row is None:
+            return False
+
+        country_update = self.world_countries.update() \
+                        .where(where_clause) \
+                        .values(flown_through=False)
+
+        self.conn.execute(country_update)
         self.conn.commit()
 
         return True
@@ -196,7 +299,7 @@ class locationDB:
             # print(name, alpha_2, alpha_3)
 
             if type(name) is str:
-                mk_country = self.world_countries.insert().values(name=name, code_2 = alpha_2, code_3 = alpha_3, visited=False)
+                mk_country = self.world_countries.insert().values(name=name, code_2 = alpha_2, code_3 = alpha_3, visited=False, flown_through=False)
                 r = self.conn.execute(mk_country)
         self.conn.commit()
 

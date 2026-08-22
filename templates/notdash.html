@@ -66,12 +66,22 @@
       left: auto;
       height: auto;
       display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+
+    /* The name/code input, submit button, and their label -- was the
+       whole form's layout before the flown-through checkbox needed
+       its own row underneath instead of fighting for space in this
+       one on narrow screens. */
+    .country-bar #country-form .country-input-row {
+      display: flex;
       flex-direction: row;
       flex-wrap: nowrap;
       align-items: center;
       gap: 0.4rem;
-      max-width: 480px;
-      margin: 0 auto;
     }
 
     .country-bar #country-form label {
@@ -79,6 +89,68 @@
       margin: 0;
       font-size: 0.8rem;
       white-space: nowrap;
+    }
+
+    .country-bar #country-form .flown-through-label {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.75rem;
+      color: #555;
+      cursor: pointer;
+    }
+
+    .country-bar #country-form .flown-through-label input[type="checkbox"] {
+      margin: 0;
+    }
+
+    .country-form-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    /* Inline success/error feedback after a fetch()-based submit --
+       empty and invisible until JS fills it in. */
+    .country-form-message {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 0.75rem;
+      min-height: 1em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .country-form-message.success {
+      color: #1a7a3c;
+    }
+
+    .country-form-message.error {
+      color: #c0392b;
+    }
+
+    /* Hidden (inline style) until JS finds at least one undoable
+       action in localStorage -- see the undo IIFE below. */
+    .undo-country-btn {
+      flex: 0 0 auto;
+      background: none;
+      border: 1px solid #999;
+      border-radius: 4px;
+      color: #333;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      cursor: pointer;
+      max-width: 55%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .undo-country-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
     }
 
     /* Wraps the input so the suggestions dropdown (absolutely
@@ -231,6 +303,16 @@
       white-space: nowrap;
     }
 
+    /* Sits between the visited card grid and the flown-through one
+       below it (see _compute_country_cards). */
+    .country-section-header {
+      margin: 1rem 0 0.6rem;
+      font-size: 1rem;
+      font-weight: bold;
+      text-align: left;
+      color: #333;
+    }
+
     /* ===== map-only override: full-bleed background map. A page with
        no table (counties) makes the map the entire page. A page that
        also has a table (countries) needs the .with-table shrink below
@@ -363,15 +445,25 @@
     <a href="/logout" class="logout-btn">Logout</a>
   </div>
 
-  <!-- Add Country: one clean row -->
+  <!-- Add Country -->
   <div class="country-bar">
     <form class="form-inline" id="country-form" action="/log_country">
-      <label for="start">Add Country</label>
-      <div class="country-autocomplete">
-        <input type="text" id="start" placeholder="<Country Name or Code>" name="country" autocomplete="off">
-        <div id="country-suggestions" class="country-suggestions"></div>
+      <div class="country-input-row">
+        <label for="start">Add Country</label>
+        <div class="country-autocomplete">
+          <input type="text" id="start" placeholder="<Country Name or Code>" name="country" autocomplete="off">
+          <div id="country-suggestions" class="country-suggestions"></div>
+        </div>
+        <button type="submit">Submit</button>
       </div>
-      <button type="submit">Submit</button>
+      <label class="flown-through-label" for="flown-through-check">
+        <input type="checkbox" id="flown-through-check" name="flown_through" value="true">
+        Flown through (not visited)
+      </label>
+      <div class="country-form-footer">
+        <span id="country-form-message" class="country-form-message"></span>
+        <button type="button" id="undo-country-btn" class="undo-country-btn" style="display:none;"></button>
+      </div>
     </form>
   </div>
 
@@ -632,6 +724,272 @@
       }
     })();
     {% endif %}
+
+    // Micro-country markers (see the /countries route -- currently
+    // just Vatican): a fixed pixel size looks fine zoomed in close,
+    // but the same size dwarfs a whole country like Italy at
+    // world-view zoom. Scale it against the map's current zoom
+    // instead of a constant. Not page-gated by a template flag --
+    // just detects whether this figure has a scattermapbox trace at
+    // all, so it's a no-op on every other page.
+    (function() {
+      var starTraceIndex = graphs.data.findIndex(function(t) { return t.type === 'scattermapbox'; });
+      if (starTraceIndex === -1) return;
+
+      var chartDiv = document.getElementById('chart');
+      var MIN_ZOOM = 2, MAX_ZOOM = 10;
+      var MIN_SIZE = 5, MAX_SIZE = 30;
+
+      function sizeForZoom(zoom) {
+        var t = Math.max(0, Math.min(1, (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)));
+        return MIN_SIZE + t * (MAX_SIZE - MIN_SIZE);
+      }
+
+      function updateStarSize() {
+        // Re-read the map's current zoom from the chart's own layout
+        // rather than the relayout event payload -- simpler than
+        // depending on exactly which keys a given interaction (pan
+        // vs. zoom vs. pinch) happens to include, and it's always
+        // kept in sync by Plotly after any relayout regardless.
+        var zoom = chartDiv.layout.mapbox.zoom;
+        Plotly.restyle('chart', {'marker.size': [sizeForZoom(zoom)]}, [starTraceIndex]);
+      }
+
+      plotReady.then(function() {
+        updateStarSize();
+        chartDiv.on('plotly_relayout', updateStarSize);
+      }).catch(function(err) {
+        console.error('star zoom-scaling setup failed:', err);
+      });
+    })();
+
+    // Add Country: submit via fetch() instead of a normal browser
+    // navigation, so success/failure shows up as a small inline
+    // message next to the form instead of replacing the whole page
+    // with the raw JSON response. Also drives the Undo button: a
+    // localStorage-backed LIFO stack of {iso_3, name, field} entries,
+    // one per *genuine* change (see the was_already_set check below).
+    // localStorage rather than sessionStorage specifically because it
+    // needs to work across tabs, not just page reloads within one.
+    (function() {
+      var form = document.getElementById('country-form');
+      if (!form) return;
+
+      var input = document.getElementById('start');
+      var messageEl = document.getElementById('country-form-message');
+      var suggestionsBox = document.getElementById('country-suggestions');
+      var undoBtn = document.getElementById('undo-country-btn');
+      var isCountriesPage = window.location.pathname === '/countries';
+      var UNDO_STORAGE_KEY = 'countryUndoStack';
+
+      var messageTimeoutId = null;
+      function showMessage(text, kind) {
+        messageEl.textContent = text;
+        messageEl.className = 'country-form-message ' + kind;
+
+        // Success messages ("Added France.", "Undid France.") are a
+        // disposable confirmation -- the map/card list already show
+        // the real result, so the message itself doesn't need to
+        // stick around. Errors are left alone; those may need
+        // reading/acting on. Clear any previous timer first so a
+        // fast follow-up message (e.g. undo right after an add)
+        // isn't cut off early by the earlier message's timer.
+        if (messageTimeoutId) {
+          clearTimeout(messageTimeoutId);
+          messageTimeoutId = null;
+        }
+        if (kind === 'success') {
+          messageTimeoutId = setTimeout(function() {
+            messageEl.textContent = '';
+            messageEl.className = 'country-form-message';
+            messageTimeoutId = null;
+          }, 5000);
+        }
+      }
+
+      // Storage access can throw (private browsing, disabled storage,
+      // etc.) -- fails safe to an empty stack / a no-op write rather
+      // than breaking the rest of the page.
+      function readUndoStack() {
+        try {
+          return JSON.parse(localStorage.getItem(UNDO_STORAGE_KEY)) || [];
+        } catch (err) {
+          return [];
+        }
+      }
+
+      function writeUndoStack(stack) {
+        try {
+          localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify(stack));
+        } catch (err) {
+          // Nothing to do -- undo just won't persist this time.
+        }
+      }
+
+      function updateUndoButton() {
+        var stack = readUndoStack();
+        if (stack.length === 0) {
+          undoBtn.style.display = 'none';
+          return;
+        }
+        var top = stack[stack.length - 1];
+        undoBtn.textContent = 'Undo ' + top.name;
+        undoBtn.style.display = '';
+      }
+
+      // Re-fetches this same page in the background and swaps in its
+      // freshly-rendered map + card list, rather than recomputing the
+      // new color/opacity/etc. here in JS -- that stays perfectly in
+      // sync with whatever the server would show on a real reload,
+      // since it's the exact same rendering code producing both.
+      // Only worth doing on /countries: it's the only page an added
+      // country could possibly change, and re-fetching a full page
+      // (multiple MB on /counties or /states) just to no-op-refresh
+      // an unrelated map would be pure waste.
+      function refreshCountriesMap() {
+        return fetch(window.location.href, {credentials: 'same-origin'})
+          .then(function(resp) { return resp.text(); })
+          .then(function(html) {
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+
+            var newTableContainer = doc.querySelector('.table-container');
+            var curTableContainer = document.querySelector('.table-container');
+            if (newTableContainer && curTableContainer) {
+              curTableContainer.innerHTML = newTableContainer.innerHTML;
+            }
+
+            var newGraphs = null;
+            doc.querySelectorAll('script').forEach(function(s) {
+              var m = s.textContent.match(/var graphs = (\{[\s\S]*?\});\s*\n\s*var config/);
+              if (m) newGraphs = JSON.parse(m[1]);
+            });
+            if (newGraphs) {
+              return Plotly.react('chart', newGraphs.data, newGraphs.layout, config);
+            }
+          });
+      }
+
+      // Runs map refreshes one at a time rather than however they
+      // happen to be triggered -- calling Plotly.react() again on a
+      // mapbox subplot before a previous call has finished can
+      // corrupt its rendering (the same class of bug the counties/
+      // states insets hit from an overlapping resize; see refitChain
+      // in the mapbox_bounds_json block above). Submitting or undoing
+      // several countries in quick succession is the same risk here.
+      // Callers that don't need to wait for the redraw (the undo
+      // button re-enabling, in particular) should call this without
+      // chaining off its return value.
+      var mapRefreshChain = Promise.resolve();
+      function scheduleMapRefresh() {
+        mapRefreshChain = mapRefreshChain.then(refreshCountriesMap).catch(function(err) {
+          console.error('map refresh failed:', err);
+        });
+        return mapRefreshChain;
+      }
+
+      form.addEventListener('submit', function(event) {
+        event.preventDefault();
+        var typedValue = input.value;
+
+        fetch(form.action, {
+          method: 'POST',
+          body: new FormData(form),
+          credentials: 'same-origin',
+        })
+          .then(function(resp) {
+            return resp.json().then(function(data) {
+              return {ok: resp.ok, data: data};
+            });
+          })
+          .then(function(result) {
+            if (result.ok && result.data.success) {
+              showMessage('Added ' + typedValue + '.', 'success');
+              form.reset();
+              if (suggestionsBox) suggestionsBox.classList.remove('open');
+
+              // Only track it as undoable if this action actually
+              // changed something -- resubmitting a country that was
+              // already set (e.g. an accidental double-click) has
+              // nothing from *this* action to undo, and blindly
+              // clearing the flag later could erase a fact that was
+              // true from a completely different, untracked action.
+              if (!result.data.was_already_set) {
+                var stack = readUndoStack();
+                stack.push({iso_3: result.data.iso_3, name: result.data.name, field: result.data.field});
+                writeUndoStack(stack);
+                updateUndoButton();
+              }
+
+              if (isCountriesPage) {
+                scheduleMapRefresh();
+              }
+            } else {
+              showMessage((result.data && result.data.error) || 'Something went wrong.', 'error');
+            }
+          })
+          .catch(function(err) {
+            console.error('country submit failed:', err);
+            showMessage('Network error -- try again.', 'error');
+          });
+      });
+
+      undoBtn.addEventListener('click', function() {
+        var stack = readUndoStack();
+        if (stack.length === 0) return;
+
+        var entry = stack.pop();
+        // Persist the pop immediately (not after the fetch resolves)
+        // so a rapid second click can't read and act on the same
+        // top-of-stack entry twice; disabling the button covers the
+        // same race for clicks on this exact button/tab, but not a
+        // second click landing in a different tab mid-request.
+        writeUndoStack(stack);
+        undoBtn.disabled = true;
+
+        fetch('/undo_country', {
+          method: 'POST',
+          body: new URLSearchParams({country: entry.iso_3, field: entry.field}),
+          credentials: 'same-origin',
+        })
+          .then(function(resp) {
+            return resp.json().then(function(data) {
+              return {ok: resp.ok, data: data};
+            });
+          })
+          .then(function(result) {
+            if (result.ok && result.data.success) {
+              showMessage('Undid ' + entry.name + '.', 'success');
+              // Not returned/chained -- the button below shouldn't
+              // have to wait for the (slower) redraw before the next
+              // undo click is allowed, only for the actual undo
+              // request, which has already finished by this point.
+              // scheduleMapRefresh still serializes it against any
+              // other pending refresh, so this doesn't reopen the
+              // overlapping-Plotly.react() risk noted above.
+              if (isCountriesPage) {
+                scheduleMapRefresh();
+              }
+            } else {
+              // Didn't apply -- put it back so the user can retry.
+              stack.push(entry);
+              writeUndoStack(stack);
+              showMessage((result.data && result.data.error) || 'Undo failed.', 'error');
+            }
+          })
+          .catch(function(err) {
+            console.error('undo failed:', err);
+            stack.push(entry);
+            writeUndoStack(stack);
+            showMessage('Network error -- try again.', 'error');
+          })
+          .then(function() {
+            undoBtn.disabled = false;
+            updateUndoButton();
+          });
+      });
+
+      updateUndoButton();
+    })();
   </script>
 </body>
 </html>

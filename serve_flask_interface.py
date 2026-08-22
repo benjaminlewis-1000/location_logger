@@ -27,7 +27,7 @@ import pandas as pd
 import plotly
 import plotly.express as px
 import plotly.graph_objects as go
-from shapely.geometry import mapping
+from shapely.geometry import mapping, shape
 from shapely.ops import transform as shapely_transform
 import re
 import requests
@@ -403,17 +403,17 @@ class FlaskApp(FlaskView):
 
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=main_df['FIPS'], z=main_df['year'],
-                coloraxis='coloraxis', subplot='mapbox',
+                coloraxis='coloraxis', subplot='mapbox', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=ak_df['FIPS'], z=ak_df['year'],
-                coloraxis='coloraxis', subplot='mapbox2',
+                coloraxis='coloraxis', subplot='mapbox2', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=hi_df['FIPS'], z=hi_df['year'],
-                coloraxis='coloraxis', subplot='mapbox3',
+                coloraxis='coloraxis', subplot='mapbox3', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
         # State-boundary overlay on the main map only (not the AK/HI
@@ -429,7 +429,7 @@ class FlaskApp(FlaskView):
                 locations=[f['id'] for f in self.states_geojson['features']],
                 z=[0] * len(self.states_geojson['features']),
                 colorscale=[[0, 'rgba(0,0,0,0)'], [1, 'rgba(0,0,0,0)']],
-                showscale=False, subplot='mapbox',
+                showscale=False, subplot='mapbox', name='',
                 marker_line_width=1.5, marker_line_color='#333',
                 hoverinfo='skip',
             ))
@@ -476,14 +476,12 @@ class FlaskApp(FlaskView):
 
         return "<div class='state-grid'>" + "".join(cards) + "</div>"
 
-    def _compute_country_cards(self, country_df):
+    def _compute_country_card_grid(self, rows_df):
         # Same card-grid look as _compute_table's state list, but no
         # href -- there's no per-country drill-down page the way
         # state_view is a drill-down from the state list.
-        visited_df = country_df[country_df['visited'] == True].sort_values('name')
-
         cards = []
-        for _, row in visited_df.iterrows():
+        for _, row in rows_df.iterrows():
             cards.append(
                 f"<div class='state-card'>"
                 f"<span class='state-card-name'>{row['name']}</span>"
@@ -492,6 +490,24 @@ class FlaskApp(FlaskView):
             )
 
         return "<div class='state-grid'>" + "".join(cards) + "</div>"
+
+    def _compute_country_cards(self, country_df):
+        visited_df = country_df[country_df['visited'] == True].sort_values('name')
+        html = self._compute_country_card_grid(visited_df)
+
+        # Flown-through-only, not also-visited (visited supersedes
+        # flown-through here too, same as the map). A separate,
+        # independent grid div rather than more cards appended to the
+        # one above -- a block-level element always starts its own new
+        # line regardless of how many columns the grid above it
+        # happened to wrap into, which two grids sharing one row could
+        # never guarantee.
+        flown_through_df = country_df[(country_df['flown_through'] == True) & (country_df['visited'] == False)].sort_values('name')
+        if len(flown_through_df) > 0:
+            html += "<h2 class='country-section-header'>Flown Through</h2>"
+            html += self._compute_country_card_grid(flown_through_df)
+
+        return html
 
     @route('/state_view', methods=['POST', 'GET'])
     @authelia_required
@@ -604,12 +620,63 @@ class FlaskApp(FlaskView):
             return Response(response= jsonpickle.encode({'error': 'Query must by of form "?country=<identifier>"', 'success': False}), status=400, mimetype="application/json")
 
         identifier = request.values['country']
-        country_add_success = self.database.set_visited_country(identifier)
-        if country_add_success:
+        # Checkbox: absent/unchecked when not submitted at all, so
+        # .get() rather than [] -- see the "Flown Through" checkbox
+        # in the country-bar form.
+        field = 'flown_through' if request.values.get('flown_through') == 'true' else 'visited'
+
+        # Looked up *before* the update, so the client can tell a real
+        # change from a no-op resubmit of something already set --
+        # only the former is safe to track as undoable (see
+        # get_country_status's docstring in location_db.py).
+        existing = self.database.get_country_status(identifier)
+        if existing is None:
+            # JSON, not the 404.html page -- this used to render a
+            # full error page since submission was a normal browser
+            # navigation, but the form now submits via fetch() (see
+            # notdash.html) and needs a consistent JSON shape on every
+            # response path, success or not.
+            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=404, mimetype="application/json")
+
+        was_already_set = existing[field]
+
+        if field == 'flown_through':
+            country_add_success = self.database.set_flown_through_country(identifier)
+        else:
+            country_add_success = self.database.set_visited_country(identifier)
+
+        return Response(response= jsonpickle.encode({
+                'error': "None",
+                'success': country_add_success,
+                'field': field,
+                'was_already_set': was_already_set,
+                'name': existing['name'],
+                'iso_3': existing['iso_3'],
+            }), status=200, mimetype="application/json")
+
+    @route('/undo_country', methods=['POST'])
+    def undo_country(self):
+        # Counterpart to /log_country for the undo button (see
+        # notdash.html) -- takes the exact {country, field} an earlier
+        # /log_country response said was safe to undo, and clears just
+        # that one column back to False.
+        if 'country' not in request.values or 'field' not in request.values:
+            return Response(response= jsonpickle.encode({'error': 'Query must be of form "?country=<identifier>&field=<visited|flown_through>"', 'success': False}), status=400, mimetype="application/json")
+
+        identifier = request.values['country']
+        field = request.values['field']
+        if field not in ('visited', 'flown_through'):
+            return Response(response= jsonpickle.encode({'error': f'Unrecognized field "{field}".', 'success': False}), status=400, mimetype="application/json")
+
+        if field == 'flown_through':
+            undo_success = self.database.unset_flown_through_country(identifier)
+        else:
+            undo_success = self.database.unset_visited_country(identifier)
+
+        if undo_success:
             return Response(response= jsonpickle.encode({'error': "None", 'success': True}), status=200, mimetype="application/json")
         else:
-            return render_template('404.html', error=f'Selected identifier "{identifier}" was not found in database.'), 404
-            # return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
+            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=404, mimetype="application/json")
 
     @route('/countries')
     @authelia_required
@@ -624,36 +691,122 @@ class FlaskApp(FlaskView):
         # subplot (no AK/HI-style insets needed for a world map).
         #
         # Each visited country gets its own color (see _country_color)
-        # instead of one shared "visited" color, plus a single shared
-        # color for every unvisited country. A single z/colorscale
-        # normally means one continuous gradient, so this builds a
-        # "stepped" colorscale instead: two colorscale stops at the
-        # start/end of each country's z-slice, both the same color,
-        # which creates a hard-edged flat block rather than a gradient
-        # into its neighbors' slices. category 0 = unvisited; each
-        # visited country gets its own category 1..N, so it gets its
-        # own single-color slice.
+        # instead of one shared "visited" color; flown-through-only
+        # countries (flown_through, but not visited -- visited always
+        # takes priority when both are set) share one neutral tint;
+        # unvisited/never-flown countries get no color at all (opacity
+        # 0, see below). A single z/colorscale normally means one
+        # continuous gradient, so this builds a "stepped" colorscale
+        # instead: two colorscale stops at the start/end of each
+        # category's z-slice, both the same color, which creates a
+        # hard-edged flat block rather than a gradient into its
+        # neighbors' slices. category 0 = unvisited/never-flown,
+        # category 1 = flown-through-only, categories 2..N+1 = one per
+        # visited country.
         visited_codes = sorted(country_df.loc[country_df['visited'] == True, 'iso_3'])
-        iso3_to_category = {code: i + 1 for i, code in enumerate(visited_codes)}
-        country_df['color_category'] = country_df['iso_3'].map(iso3_to_category).fillna(0).astype(int)
+        iso3_to_category = {code: i + 2 for i, code in enumerate(visited_codes)}
+        country_df['color_category'] = country_df['iso_3'].map(iso3_to_category)
+        flown_through_only = (country_df['flown_through'] == True) & (country_df['visited'] == False)
+        country_df.loc[flown_through_only, 'color_category'] = 1
+        country_df['color_category'] = country_df['color_category'].fillna(0).astype(int)
 
-        num_categories = len(visited_codes) + 1
-        palette = ['#F5F3ED'] + [_country_color(code) for code in visited_codes]
+        FLOWN_THROUGH_COLOR = '#5B84B1'
+        num_categories = len(visited_codes) + 2
+        palette = ['#F5F3ED', FLOWN_THROUGH_COLOR] + [_country_color(code) for code in visited_codes]
         colorscale = []
         for k, color in enumerate(palette):
             colorscale.append([k / num_categories, color])
             colorscale.append([(k + 1) / num_categories, color])
+
+        # Fill opacity per country -- 0 (fully transparent) for
+        # unvisited/never-flown, so the basemap shows through
+        # completely instead of a flat neutral fill; 0.25 for
+        # flown-through-only, a light tint; 0.5 for visited, so the
+        # basemap is still partly visible under the color.
+        # np.select checks 'visited' first, so a country that's both
+        # gets the visited opacity, matching the same priority as the
+        # color category above. marker.opacity accepts a per-location
+        # array same as z does; the border (marker.line) is a separate
+        # style layer with its own opacity (left at its default, fully
+        # opaque) so country outlines stay visible everywhere
+        # regardless of fill opacity.
+        country_df['fill_opacity'] = np.select(
+                [country_df['visited'], country_df['flown_through']],
+                [0.5, 0.25],
+                default=0.0,
+            )
+
+        # Hover: bare name for visited/unvisited (unchanged), but
+        # flown-through-only countries get a qualifier -- otherwise
+        # there'd be no way to tell from the hover alone why a country
+        # is tinted differently than a fully unvisited one.
+        country_df['hover_label'] = country_df['name']
+        country_df.loc[flown_through_only, 'hover_label'] = country_df.loc[flown_through_only, 'name'] + ' (flown through)'
 
         fig = go.Figure()
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.world_countries_geojson, locations=country_df['iso_3'],
                 # +0.5: the middle of each category's z-slice, so it's
                 # unambiguously inside its own step rather than sitting
-                # right on a boundary between two colors.
+                # right on a boundary between two colors. This z is
+                # purely an internal color-bucket index (see above),
+                # meaningless to a viewer, so it's kept out of the
+                # hover entirely -- hovertemplate replaces the default
+                # location(iso_3)+z hover with just the country name
+                # (via customdata, since `locations` has to stay the
+                # iso_3 code for the geojson lookup to work) and
+                # <extra></extra> drops the default trace-name box too.
                 z=country_df['color_category'] + 0.5, zmin=0, zmax=num_categories,
+                marker_opacity=country_df['fill_opacity'],
+                customdata=country_df['hover_label'], hovertemplate='%{customdata}<extra></extra>',
                 coloraxis='coloraxis', subplot='mapbox',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
+
+        # Visited micro-countries (Vatican, Monaco, San Marino, ...)
+        # are a sub-pixel dot on a world map -- their choropleth fill
+        # is technically there but never visible. Flag any visited
+        # country whose bounding-box diagonal is under this threshold
+        # (picked by eyeballing the actual size distribution: it
+        # catches true microstates/city-states without also flagging
+        # merely-small-but-still-visible countries like Luxembourg or
+        # Qatar) with a marker at its centroid instead.
+        #
+        # mode='markers' (a plain circle), not marker(symbol='star') or
+        # mode='text' with a star glyph -- both were tried and neither
+        # actually showed up on screen. symbol='star' needs Mapbox's
+        # hosted icon sprites, which needs an access token this app
+        # doesn't have (it deliberately uses the free, tokenless
+        # carto-positron style). mode='text' compiles to a mapbox-gl
+        # *symbol* layer, which has collision detection *on* by
+        # default -- if it decides the glyph would overlap the
+        # basemap's own labels (a city name, a sea label, etc.) at
+        # that zoom, it silently drops it, and Plotly's declarative API
+        # doesn't expose the style-spec property to turn that off. A
+        # plain circle marker compiles to a *circle* layer instead,
+        # which isn't part of that collision system at all -- it
+        # always draws.
+        TINY_COUNTRY_DIAGONAL_DEGREES = 0.5
+        iso3_to_name = dict(zip(country_df['iso_3'], country_df['name']))
+        id_to_geometry = {f['id']: f['geometry'] for f in self.world_countries_geojson['features']}
+
+        star_lons, star_lats, star_names = [], [], []
+        for code in visited_codes:
+            geom = shape(id_to_geometry[code])
+            minx, miny, maxx, maxy = geom.bounds
+            if math.hypot(maxx - minx, maxy - miny) < TINY_COUNTRY_DIAGONAL_DEGREES:
+                centroid = geom.centroid
+                star_lons.append(centroid.x)
+                star_lats.append(centroid.y)
+                star_names.append(iso3_to_name[code])
+
+        if star_lons:
+            fig.add_trace(go.Scattermapbox(
+                    lon=star_lons, lat=star_lats,
+                    mode='markers', marker=dict(size=16, color='#000000'),
+                    customdata=star_names, hovertemplate='%{customdata}<extra></extra>',
+                    subplot='mapbox', showlegend=False,
+                ))
 
         fig.update_layout(
                 coloraxis=dict(colorscale=colorscale, showscale=False),
@@ -716,17 +869,17 @@ class FlaskApp(FlaskView):
         fig = go.Figure()
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=main_df['state'], z=main_df['year'],
-                coloraxis='coloraxis', subplot='mapbox',
+                coloraxis='coloraxis', subplot='mapbox', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=ak_df['state'], z=ak_df['year'],
-                coloraxis='coloraxis', subplot='mapbox2',
+                coloraxis='coloraxis', subplot='mapbox2', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=hi_df['state'], z=hi_df['year'],
-                coloraxis='coloraxis', subplot='mapbox3',
+                coloraxis='coloraxis', subplot='mapbox3', name='',
                 marker_line_width=0.4, marker_line_color='#888',
             ))
 
