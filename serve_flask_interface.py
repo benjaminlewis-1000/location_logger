@@ -164,6 +164,24 @@ def _country_color(code):
     r, g, b = colorsys.hls_to_rgb(hue, 0.50, 0.65)
     return '#{:02x}{:02x}{:02x}'.format(round(r * 255), round(g * 255), round(b * 255))
 
+def _format_year_ranges(years):
+    # [2015, 2018, 2019, 2020, 2021, 2022, 2024, 2025, 2026] ->
+    # "2015, 2018-2022, 2024-2026" -- any run of 2+ consecutive years
+    # collapses to a range.
+    years = sorted(set(years))
+    if not years:
+        return ''
+    ranges = []
+    start = prev = years[0]
+    for y in years[1:]:
+        if y == prev + 1:
+            prev = y
+            continue
+        ranges.append(f'{start}-{prev}' if start != prev else f'{start}')
+        start = prev = y
+    ranges.append(f'{start}-{prev}' if start != prev else f'{start}')
+    return ', '.join(ranges)
+
 load_dotenv()
 
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
@@ -369,15 +387,24 @@ class FlaskApp(FlaskView):
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
 
-        # county_df['year'] is -1 for never-visited, else (real year -
-        # 2000) -- see location_db.get_county_visits_dataframe(). Used
-        # to bound the client-side year slider.
-        visited_years = county_df.loc[county_df['year'] > -1, 'year']
-        if len(visited_years) > 0:
-            self.year_min = int(visited_years.min()) + 2000
-            self.year_max = int(visited_years.max()) + 2000
+        # Sourced from the full county_visits history rather than
+        # counties.year (which is min-of-per-county-*maxes*, not a true
+        # global minimum -- a county whose only visit was 2010 would set
+        # the floor at 2010 even if some other county's first, but not
+        # only, visit was 2002). Falls back to the old counties.year-based
+        # computation only in the pre-backfill transitional state, when
+        # county_visits is still empty.
+        all_visit_years = [y for years in self.database.get_county_visit_years_dict().values() for y in years]
+        if all_visit_years:
+            self.year_min = min(all_visit_years)
+            self.year_max = max(all_visit_years)
         else:
-            self.year_min = self.year_max = datetime.now().year
+            visited_years = county_df.loc[county_df['year'] > -1, 'year']
+            if len(visited_years) > 0:
+                self.year_min = int(visited_years.min()) + 2000
+                self.year_max = int(visited_years.max()) + 2000
+            else:
+                self.year_min = self.year_max = datetime.now().year
 
         # Three separate mapbox subplots (continental US, plus small
         # Alaska/Hawaii insets) instead of a single geo/choropleth
@@ -592,6 +619,26 @@ class FlaskApp(FlaskView):
 
         visited_string = f' - {num_visited}/{self.num_counties} | {num_visited / self.num_counties * 100:.2f}%'
 
+        # Computed fresh on every request, deliberately not folded into
+        # the cached self.template above: the cache-freshness check just
+        # above only compares num_visited/avg_county_year, and a backfill
+        # run can add an *earlier* year to an already-visited county
+        # without changing either of those aggregates. Baking this into
+        # the cached figure would make it go stale indefinitely after a
+        # backfill, not just briefly.
+        county_df = self.database.get_county_visits_dataframe()
+        years_by_fips = self.database.get_county_visit_years_dict()
+
+        first_visit_year = {}
+        county_hover_text = {}
+        for fips, name, state in zip(county_df['FIPS'], county_df['name'], county_df['state']):
+            years = years_by_fips.get(fips, [])
+            if years:
+                first_visit_year[fips] = min(years) - 2000  # same offset convention as the z values below
+                county_hover_text[fips] = f"{name}, {state} — {_format_year_ranges(years)}"
+            else:
+                county_hover_text[fips] = f"{name}, {state} — not yet visited"
+
         # The server can't know the visitor's actual screen size, so
         # the zoom/center baked into the figure above is only a
         # reasonable first-paint guess (tuned for a desktop window).
@@ -603,6 +650,8 @@ class FlaskApp(FlaskView):
                 'mapbox2': list(map(float, self.ak_bounds)),
                 'mapbox3': list(map(float, self.hi_bounds)),
                 'yearRange': [self.year_min, self.year_max],
+                'firstVisitYear': first_visit_year,
+                'countyHoverText': county_hover_text,
             })
 
         return render_template('notdash.html',
@@ -1294,6 +1343,21 @@ class FlaskApp(FlaskView):
         # 2. Redirect to Authelia's logout, which then sends them back to your app
         # After Authelia logs out, the user will be unauthenticated next time they visit.
         return response
+
+    @route('/engineering')
+    @authelia_required
+    def serve_engineering(self):
+        # No link to this page anywhere in the nav -- URL-only, by design.
+        progress = self.database.get_processing_progress()
+        return render_template('engineering.html',
+                page_title='OwnTracks - Engineering',
+                **progress)
+
+    @route('/engineering_status')
+    @authelia_required
+    def serve_engineering_status(self):
+        progress = self.database.get_processing_progress()
+        return Response(response=jsonpickle.encode(progress), status=200, mimetype="application/json")
 
 
 # The Add Country form lives in the shared top nav (.country-bar),

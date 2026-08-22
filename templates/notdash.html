@@ -672,15 +672,15 @@
       });
 
       // Year slider: cumulative "counties visited by year X" filter.
-      // Every county's year value is already loaded on the page (it's
-      // what drives the choropleth color), so this recolors entirely
+      // The displayed color still comes from each county's *most recent*
+      // visit year (the z values baked into the figure server-side), but
+      // the show/hide test below consults mapBounds.firstVisitYear (the
+      // *first* visit year, from the full county_visits history) instead
+      // -- a cumulative "visited by year X" filter is logically a
+      // question about when a county was *first* visited, not most
+      // recently, so a county visited in both 2015 and 2022 correctly
+      // shows from 2015 onward, not just 2022. Recolors entirely
       // client-side via Plotly.restyle -- no server round-trip.
-      //
-      // Caveat: the underlying data only stores each county's *most
-      // recent* visit year, not every year it was visited, so a
-      // county visited in e.g. both 2015 and 2022 only "counts" as
-      // visited from 2022 onward here, not 2015. Getting that right
-      // needs a schema change to track every visit-year per county.
       var slider = document.getElementById('yearSlider');
       var sliderValueLabel = document.getElementById('yearSliderValue');
 
@@ -689,6 +689,10 @@
         var UNVISITED_Z = -1;
         var yearMin = mapBounds.yearRange[0];
         var yearMax = mapBounds.yearRange[1];
+        // Absent (e.g. on /states, which has no per-county history) or
+        // for a county not yet in county_visits (pre-backfill transitional
+        // state) -- falls back to v itself below, same as before this fix.
+        var firstVisitYear = mapBounds.firstVisitYear || {};
 
         slider.min = yearMin;
         slider.max = yearMax;
@@ -711,9 +715,12 @@
           var newZ = [];
           originalZ.forEach(function(z, idx) {
             if (!z) return;
+            var locs = graphs.data[idx].locations || [];
             traceIndices.push(idx);
-            newZ.push(z.map(function(v) {
-              return (v > UNVISITED_Z && v > cutoffOffset) ? UNVISITED_Z : v;
+            newZ.push(z.map(function(v, i) {
+              var fips = locs[i];
+              var firstYear = firstVisitYear.hasOwnProperty(fips) ? firstVisitYear[fips] : v;
+              return (v > UNVISITED_Z && firstYear > cutoffOffset) ? UNVISITED_Z : v;
             }));
           });
 
@@ -721,6 +728,26 @@
         }
 
         slider.addEventListener('input', applyYearFilter);
+      }
+
+      // County hover: replace the Plotly-default (raw FIPS + internal
+      // offset year) with the county name and its full visited-years
+      // list, e.g. "Greene County, OH -- 2015, 2018-2022". Restyled once
+      // on load, not baked into the server-cached figure, for the same
+      // staleness reason firstVisitYear above is computed fresh per
+      // request rather than cached -- see serve_county_graph.
+      var countyHoverText = mapBounds.countyHoverText;
+      if (countyHoverText) {
+        var hoverTraceIndices = [];
+        var customdataUpdate = [];
+        graphs.data.forEach(function(trace, idx) {
+          if (!trace.locations) return;
+          hoverTraceIndices.push(idx);
+          customdataUpdate.push(trace.locations.map(function(fips) {
+            return countyHoverText[fips] || '';
+          }));
+        });
+        Plotly.restyle('chart', {customdata: customdataUpdate, hovertemplate: '%{customdata}<extra></extra>'}, hoverTraceIndices);
       }
     })();
     {% endif %}

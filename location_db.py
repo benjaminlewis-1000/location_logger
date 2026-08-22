@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text, func, or_
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float, Boolean
 from sqlalchemy.sql import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy_utils import database_exists, create_database
 import csv
 import dateutil
@@ -78,6 +79,12 @@ class locationDB:
                 Column('speed', Float),
                 Column('source', String),
                 Column('county_processed', Boolean),
+                Column('county_visit_year_logged', Boolean, default=False),
+            )
+
+        self.county_visits = Table('county_visits', metadata,
+                Column('fips', String, ForeignKey('counties.fips'), primary_key=True),
+                Column('year', Integer, primary_key=True),
             )
 
         if not database_exists(self.engine.url):
@@ -96,6 +103,11 @@ class locationDB:
             if not exist_cn: # set(insp.get_table_names()) == set(['users', 'positions']):
                 print("Need to add country table")
                 # self.us_counties.create(self.conn.bind)
+                metadata.create_all(self.engine)
+
+            exist_cv = insp.has_table("county_visits")
+            if not exist_cv:
+                print("Need to add county_visits table")
                 metadata.create_all(self.engine)
 
             # Check that the table has a 'county_computed' field
@@ -123,6 +135,19 @@ class locationDB:
             cnames = [c['name'] for c in columns]
             if 'flown_through' not in cnames:
                 sql_insert = 'alter table countries add column flown_through Boolean default False'
+                with self.engine.begin() as conn2:
+                    result = conn2.execute(text(sql_insert))
+                    conn2.commit()
+
+            # Separate from county_processed -- see the mode split in
+            # add_county_visits.py's CountyAdder. Kept independent so a
+            # one-off historical backfill can replay every position
+            # (including ones already county_processed=True) without
+            # disturbing the ongoing cron pipeline's own progress marker.
+            columns = insp.get_columns('positions')
+            cnames = [c['name'] for c in columns]
+            if 'county_visit_year_logged' not in cnames:
+                sql_insert = 'alter table positions add column county_visit_year_logged Boolean default False'
                 with self.engine.begin() as conn2:
                     result = conn2.execute(text(sql_insert))
                     conn2.commit()
@@ -162,6 +187,26 @@ class locationDB:
                 fix = self.world_countries.update() \
                         .where(self.world_countries.c.name == name) \
                         .values(code_2=lookup.loc[name, 'alpha-2'], code_3=lookup.loc[name, 'alpha-3'])
+                self.conn.execute(fix)
+            self.conn.commit()
+
+        # Repair a pre-existing data bug: populate_county_table used to
+        # pass pandas' Series.name attribute instead of indexing the
+        # 'name' column when seeding (see the fix and comment there) --
+        # every county silently got its CSV row's positional index as
+        # its name (e.g. FIPS 01001 stored as "2") instead of its real
+        # name. Nothing displayed counties.name until the county-visit-
+        # years hover text, which is what surfaced this. Self-heals on
+        # every startup by comparing against the source CSV; a no-op
+        # once fixed.
+        fips_to_name = dict(zip(self.fips.fips, self.fips['name']))
+        name_check = select(self.us_counties.c.fips, self.us_counties.c.name)
+        mismatched = [fips for fips, stored_name in self.conn.execute(name_check).fetchall()
+                      if fips_to_name.get(fips) is not None and stored_name != fips_to_name.get(fips)]
+        if mismatched:
+            print(f"Repairing {len(mismatched)} county name(s) corrupted by a prior seeding bug")
+            for fips in mismatched:
+                fix = self.us_counties.update().where(self.us_counties.c.fips == fips).values(name=fips_to_name[fips])
                 self.conn.execute(fix)
             self.conn.commit()
 
@@ -312,14 +357,22 @@ class locationDB:
         for ln in range(len(self.fips)):
             line = self.fips.iloc[ln]
             if type(line.state) is str:
-                mkcounty = self.us_counties.insert().values(fips=line.fips,name=line.name,state=line.state,visited=False)
+                # line['name'], not line.name -- a Series' .name
+                # attribute is its own (pandas-internal) name, which
+                # for a row pulled via .iloc[] is that row's index, not
+                # this row's 'name' column value, even though a column
+                # literally called 'name' exists. See the repair block
+                # in __init__ for the fallout of getting this wrong.
+                mkcounty = self.us_counties.insert().values(fips=line.fips,name=line['name'],state=line.state,visited=False)
                 r = self.conn.execute(mkcounty)
         self.conn.commit()
 
-    def count_unprocessed_counties(self):
+    def count_unprocessed_counties(self, column=None):
         # Not sure I understand completely how
-        # the count statement works, but it does. 
-        query = select(self.positions).where(self.positions.c.county_processed == False)# .count() 
+        # the count statement works, but it does.
+        if column is None:
+            column = self.positions.c.county_processed
+        query = select(self.positions).where(column == False)# .count()
         count_stmt = select(func.count("*")).select_from(
             query.alias("s")
         )
@@ -348,6 +401,11 @@ class locationDB:
         cfips, visited, visit_year = data[0]
         # print(data, visit_year, cfips, visited)
 
+        # Unconditional -- every call records into the ledger, regardless
+        # of whether it becomes the new max-year cache below. This is the
+        # one place that decision is made, so no caller has to remember to.
+        self.record_county_visit_year(county_fips, update_year)
+
         if update_year <= visit_year and visited:
             # print("No update")
             pass
@@ -356,6 +414,37 @@ class locationDB:
             county_update = self.us_counties.update().where(fips_statement).values(visited=True, year=update_year)
             self.conn.execute(county_update)
             self.conn.commit()
+
+    def record_county_visit_year(self, fips: str, year: int):
+        assert type(fips) == str
+        assert type(year) == int
+
+        if len(fips) != 5:
+            fips = re.sub('.*US', '', fips)
+        assert len(fips) == 5
+
+        where_clause = (self.county_visits.c.fips == fips) & (self.county_visits.c.year == year)
+        exists = select(self.county_visits.c.fips).where(where_clause)
+        result = self.conn.execute(exists).fetchone()
+        if result is None:
+            try:
+                self.conn.execute(self.county_visits.insert().values(fips=fips, year=year))
+                self.conn.commit()
+            except IntegrityError:
+                # Another writer (cron vs. a backfill run) inserted the
+                # same (fips, year) first -- end state is the same either
+                # way, so this is a harmless no-op, not an error.
+                self.conn.rollback()
+
+    def get_county_visit_years_dict(self):
+        query = select(self.county_visits.c.fips, self.county_visits.c.year) \
+            .order_by(self.county_visits.c.fips, self.county_visits.c.year)
+        result = self.conn.execute(query).fetchall()
+
+        years_by_fips = {}
+        for fips, year in result:
+            years_by_fips.setdefault(fips, []).append(year)
+        return years_by_fips
 
     def set_visited_multiple_counties(self, county_fips_ids: list):
         # Check that the fips is in the table
@@ -391,11 +480,20 @@ class locationDB:
         self.conn.execute(county_update)
         self.conn.commit()
 
-    def set_point_county_processed(self, position_id: int):
-        # Set the value of 'county_processed' in the positions 
-        # table for a point with position_id
+        # A targeted correction ("this county was mis-detected") should
+        # remove it from the visit-year ledger too, not just the cache --
+        # unlike unset_all_points, which is a blanket ongoing-pipeline
+        # reset and deliberately leaves county_visits alone.
+        self.conn.execute(self.county_visits.delete().where(self.county_visits.c.fips == fips))
+        self.conn.commit()
+
+    def set_point_county_processed(self, position_id: int, column=None):
+        # Set the value of 'county_processed' (or the given tracking
+        # column) in the positions table for a point with position_id
         assert type(position_id) in [int, np.int32, np.int64]
         position_id = int(position_id)
+        if column is None:
+            column = self.positions.c.county_processed
 
         exists = select(self.positions.c.id).where(self.positions.c.id == position_id )
         result = self.conn.execute(exists)
@@ -403,13 +501,15 @@ class locationDB:
 
         query = self.positions.update() \
             .where(self.positions.c.id == position_id) \
-            .values(county_processed = True)
+            .values(**{column.name: True})
         self.conn.execute(query)
         self.conn.commit()
 
-    def set_pointlist_county_processed(self, position_list: list):
+    def set_pointlist_county_processed(self, position_list: list, column=None):
         # Used to update points for frequently visited counties
         assert type(position_list) == list
+        if column is None:
+            column = self.positions.c.county_processed
 
         # Iterate over the list
         start_idx = 0
@@ -422,11 +522,34 @@ class locationDB:
             ids_update = self.positions.c.id.in_(tuple(sublist))
 
             update = self.positions.update() \
-                .where(ids_update).values(county_processed=True)
+                .where(ids_update).values(**{column.name: True})
 
             self.conn.execute(update)
             self.conn.commit()
             
+
+    def get_processing_progress(self):
+        # Powers /engineering -- how far along the two positions-table
+        # tracking columns are (see the mode split in add_county_visits.py's
+        # CountyAdder): 'ongoing' is the regular cron pipeline, 'backfill'
+        # is the one-off historical replay.
+        pc = self.positions.c
+        total = self.conn.execute(select(func.count()).select_from(self.positions)).scalar()
+        ongoing_done = self.conn.execute(
+                select(func.count()).select_from(self.positions).where(pc.county_processed == True)).scalar()
+        backfill_done = self.conn.execute(
+                select(func.count()).select_from(self.positions).where(pc.county_visit_year_logged == True)).scalar()
+
+        ongoing_pct = round(100 * ongoing_done / total, 1) if total else 0.0
+        backfill_pct = round(100 * backfill_done / total, 1) if total else 0.0
+
+        return {
+            'total': total,
+            'ongoing_done': ongoing_done,
+            'ongoing_pct': ongoing_pct,
+            'backfill_done': backfill_done,
+            'backfill_pct': backfill_pct,
+        }
 
     def get_num_counties_visited(self):
         visited = select(self.us_counties.c).where(self.us_counties.c.visited == True)
@@ -456,9 +579,11 @@ class locationDB:
         
         return average_year
 
-    def get_points_to_parse_dataframe(self, start_utc = None, num_points = None):
+    def get_points_to_parse_dataframe(self, start_utc = None, num_points = None, column = None):
 
         pc = self.positions.c
+        if column is None:
+            column = pc.county_processed
 
         if num_points is not None:
             if type(num_points) is not int or num_points <= 0:
@@ -466,12 +591,12 @@ class locationDB:
 
         if start_utc is not None:
             min_unproc_qry = select(pc.utc_time) \
-                .where(pc.county_processed == False) \
+                .where(column == False) \
                 .where(pc.utc_time > start_utc) \
                 .order_by(pc.utc_time.asc())
         else:
             min_unproc_qry = select(pc.utc_time) \
-                .where(pc.county_processed == False) \
+                .where(column == False) \
                 .order_by(pc.utc_time.asc())
 
         data = self.conn.execute(min_unproc_qry)
@@ -501,7 +626,12 @@ class locationDB:
         assert min_cmp <= min_unprocessed
 
         # Query: All relevant data that is greater than that lower bound plus a few outliers.
-        relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.county_processed, pc.accuracy) \
+        # Selects `column` itself (not always pc.county_processed) so the
+        # returned 'county_proc' frame column reflects whichever tracking
+        # flag actually drove this query -- CountyAdder's pandas-side
+        # unprocessed-filter checks that column by that fixed name
+        # regardless of mode.
+        relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, column, pc.accuracy) \
             .where(pc.utc_time >= min_cmp) \
             .order_by(pc.utc_time.asc())
 
@@ -521,11 +651,12 @@ class locationDB:
         county_data = select(self.us_counties.c.fips, \
                              self.us_counties.c.visited, \
                              self.us_counties.c.state, \
-                             self.us_counties.c.year)
+                             self.us_counties.c.year, \
+                             self.us_counties.c.name)
 
         result = self.conn.execute(county_data)
         result = result.fetchall()
-        result = pd.DataFrame(result, columns=['FIPS', 'visited', 'state', 'year'])
+        result = pd.DataFrame(result, columns=['FIPS', 'visited', 'state', 'year', 'name'])
         # result.year = pd.to_numeric(result.year)
 
         pos_idcs = result['year'] > 0

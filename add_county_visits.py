@@ -16,17 +16,34 @@ import config
 
 class CountyAdder(object):
     """docstring for CountyAdder"""
-    def __init__(self):
+    def __init__(self, mode='ongoing'):
         super(CountyAdder, self).__init__()
+        assert mode in ('ongoing', 'backfill')
+        self.mode = mode
 
         # Load the json file with county coordinates
         self.geoData = gpd.read_file(config.basic_county_json)
         # Set up a hook to the location database
-        self.database = location_db.locationDB(db_name=config.database_location, 
-            fips_file = config.county_fips_file,  
+        self.database = location_db.locationDB(db_name=config.database_location,
+            fips_file = config.county_fips_file,
             country_file=config.country_file)
 
         self.speed_thresh = 45 # 45 m/s ~= 100 mph
+
+        # 'ongoing' (the regular cron pipeline): updates the county_processed
+        # tracking flag and the counties.visited/year max-year cache, same as
+        # always. 'backfill' (a one-off historical replay): tracks progress on
+        # a separate county_visit_year_logged flag instead, and only ever
+        # records into the county_visits ledger -- it never touches
+        # counties.visited/year or county_processed, so it can't disturb
+        # what the live map currently shows, and can safely replay points
+        # that ongoing processing already finished with long ago.
+        if self.mode == 'ongoing':
+            self.processed_column = self.database.positions.c.county_processed
+            self.visit_recorder = self.database.set_visited_county
+        else:
+            self.processed_column = self.database.positions.c.county_visit_year_logged
+            self.visit_recorder = lambda pair: self.database.record_county_visit_year(pair[0], pair[1])
 
     def reset_db(self):
         self.database.unset_all_points()
@@ -35,7 +52,7 @@ class CountyAdder(object):
         num_left = 99999
         # Get the number left to process
         while num_left > 100:
-            num_left = self.database.count_unprocessed_counties()
+            num_left = self.database.count_unprocessed_counties(column=self.processed_column)
             self.process_points(num_points = 50000)
 
     def process_points(self, num_points = None):
@@ -46,7 +63,7 @@ class CountyAdder(object):
 
         # self.alldata = self.database.get_points_to_parse_dataframe(start_utc = 1718682342, num_points=num_points)
         # self.alldata = self.database.get_points_to_parse_dataframe(start_utc = 1722543816, num_points=num_points)
-        self.alldata = self.database.get_points_to_parse_dataframe(num_points=num_points)
+        self.alldata = self.database.get_points_to_parse_dataframe(num_points=num_points, column=self.processed_column)
         self.utc_index = self.alldata.utc.to_numpy()
 
         if self.alldata is None:
@@ -77,7 +94,7 @@ class CountyAdder(object):
 
         # Find the ID's of the too fast points and set them to processed
         fast_ids = infrequent_unprocessed[too_fast].id.tolist()
-        self.database.set_pointlist_county_processed(fast_ids)
+        self.database.set_pointlist_county_processed(fast_ids, column=self.processed_column)
 
         # Replay the counties.
         self.replay_counties(filtered_points)
@@ -93,9 +110,9 @@ class CountyAdder(object):
 
         county_lookup = self._look_up_county(lat, lon)
         new_county_pair = (str(county_lookup['GEO_ID'].item()), year)
-        self.database.set_visited_county(new_county_pair)
+        self.visit_recorder(new_county_pair)
         # Set as processed regardless.
-        self.database.set_point_county_processed(id_num)
+        self.database.set_point_county_processed(id_num, column=self.processed_column)
 
     def _look_up_county(self, lat: float, lon: float):
         qpt = Point(map(float, (lon, lat)))
@@ -221,24 +238,29 @@ class CountyAdder(object):
                     & (unprocessed_dataframe['lat'] > county['BotLat'])
             not_in_county = ~frequent_points
 
-            # Get the latest value in this county so that it will be updated
-            # in the database (e.g. update the year). 
+            # Get the latest value per calendar year in this county so
+            # every distinct visit-year still gets recorded, not just
+            # whichever point happens to be globally latest across the
+            # whole batch -- a frequently-visited (e.g. home) county would
+            # otherwise only ever get one year recorded per batch, no
+            # matter how many different years it was actually visited in.
             in_county = unprocessed_dataframe[frequent_points].copy()
             if len(in_county) == 0:
-                # No points here. 
+                # No points here.
                 continue
-            latest_entry_idx = int(in_county['datetime'].argmax())
-            latest_entry = in_county.iloc[latest_entry_idx]
-            latest_county_points.append(latest_entry)
-            # print('before',  len(in_county))
-            # print(in_county.iloc[latest_entry_idx].name)
-            in_county.drop(in_county.iloc[latest_entry_idx].name, inplace=True)
-            # print('after', len(in_county))
 
-            # TODO: Set these as processed.
-            in_county_ids = in_county.id.tolist()
-            self.database.set_pointlist_county_processed(in_county_ids)
+            # Not .dt.year -- this column isn't guaranteed datetime64
+            # dtype (built from a raw fetchall(), not pd.read_sql), and
+            # .apply matches this file's existing per-scalar .year idiom
+            # (see date0.year / point_df_entry.datetime.year elsewhere).
+            visit_years = in_county['datetime'].apply(lambda d: d.year)
+            for yr, group in in_county.groupby(visit_years):
+                latest_idx = int(group['datetime'].argmax())
+                latest_entry = group.iloc[latest_idx]
+                latest_county_points.append(latest_entry)
 
+                rest_ids = group.drop(group.iloc[latest_idx].name).id.tolist()
+                self.database.set_pointlist_county_processed(rest_ids, column=self.processed_column)
 
             # Filter these points out.
             unprocessed_dataframe = unprocessed_dataframe[not_in_county].copy()
@@ -268,19 +290,19 @@ class CountyAdder(object):
 
                 # Doesn't have a value
                 if len(in_county) == 0: # Not in a US county:
-                    self.database.set_point_county_processed(id0)
+                    self.database.set_point_county_processed(id0, column=self.processed_column)
                     continue
                 last_county = in_county
                 last_point_year = date0.year
                 print("New county! ", in_county, date0)
                 new_county_pair = (str(last_county['GEO_ID'].item()), last_point_year)
-                self.database.set_visited_county(new_county_pair)
+                self.visit_recorder(new_county_pair)
 
             # Normal processing relative to last_county
             in_county = last_county['geometry'].contains(qpt)
             this_year = date0.year
             if in_county.item() and this_year == last_point_year:
-                self.database.set_point_county_processed(id0)
+                self.database.set_point_county_processed(id0, column=self.processed_column)
             else:
                 # Figure out if it's a new year or a new county
                 if in_county.item():
@@ -289,21 +311,21 @@ class CountyAdder(object):
                     new_county_pair = (str(last_county['GEO_ID'].item()), this_year)
                     # print("GEOID", last_county)
                     last_point_year = this_year
-                    self.database.set_visited_county(new_county_pair)
-                    self.database.set_point_county_processed(id0)
+                    self.visit_recorder(new_county_pair)
+                    self.database.set_point_county_processed(id0, column=self.processed_column)
                 else:
                     # Figure out the new county 
                     new_county = self.geoData[self.geoData['geometry'].contains(qpt)]
                     if len(new_county) == 0:
-                      self.database.set_point_county_processed(id0)
+                      self.database.set_point_county_processed(id0, column=self.processed_column)
                       continue
 
                     assert len(new_county) == 1
                     # print("NC\n", new_county)
                     # print("Name_id", new_county['NAME'], new_county['GEO_ID'])
                     new_county_pair = (str(new_county['GEO_ID'].item()), this_year)
-                    self.database.set_visited_county(new_county_pair)
-                    self.database.set_point_county_processed(id0)
+                    self.visit_recorder(new_county_pair)
+                    self.database.set_point_county_processed(id0, column=self.processed_column)
 
                     last_point_year = this_year
                     last_county = new_county

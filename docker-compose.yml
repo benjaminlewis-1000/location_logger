@@ -30,6 +30,7 @@ services:
     restart: always
     environment:
       - TZ=America/New_York
+      - APP_ENV=dev
 
 networks:
   default:
