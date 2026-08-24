@@ -132,9 +132,15 @@
     }
 
     /* Hidden (inline style) until JS finds at least one undoable
-       action in localStorage -- see the undo IIFE below. */
+       action in localStorage -- see the undo IIFE below. Sits in
+       .country-input-row alongside the input/Submit; min-width:0 lets
+       it shrink instead of forcing the row to wrap, and the input
+       itself (flex:1 1 auto, min-width:0) is what actually gives up
+       space first -- max-width here is just a backstop against a
+       pathologically long country name, not the primary constraint. */
     .undo-country-btn {
-      flex: 0 0 auto;
+      flex: 0 1 auto;
+      min-width: 0;
       background: none;
       border: 1px solid #999;
       border-radius: 4px;
@@ -142,7 +148,7 @@
       font-size: 0.75rem;
       padding: 3px 8px;
       cursor: pointer;
-      max-width: 55%;
+      max-width: 45%;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -415,6 +421,36 @@
       white-space: nowrap;
     }
 
+    /* "Up to" (cumulative) / "Only" (exact year) mode switch --
+       a small segmented control in front of the year value/slider. */
+    .year-mode-toggle {
+      display: flex;
+      flex: 0 0 auto;
+      border: 1px solid #999;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .year-mode-btn {
+      flex: 0 0 auto;
+      background: #fff;
+      border: none;
+      color: #333;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+
+    .year-mode-btn + .year-mode-btn {
+      border-left: 1px solid #999;
+    }
+
+    .year-mode-btn.active {
+      background: #32D172;
+      color: #fff;
+      font-weight: bold;
+    }
+
     @media (orientation: landscape) {
       body.map-only .year-slider-bar {
         position: fixed;
@@ -423,7 +459,7 @@
         transform: translateY(-50%);
         flex-direction: column;
         width: auto;
-        height: 220px;
+        height: 260px;
         border-radius: 8px;
         z-index: 2;
       }
@@ -446,6 +482,7 @@
   </div>
 
   <!-- Add Country -->
+  {% if show_country_bar %}
   <div class="country-bar">
     <form class="form-inline" id="country-form" action="/log_country">
       <div class="country-input-row">
@@ -455,6 +492,7 @@
           <div id="country-suggestions" class="country-suggestions"></div>
         </div>
         <button type="submit">Submit</button>
+        <button type="button" id="undo-country-btn" class="undo-country-btn" style="display:none;"></button>
       </div>
       <label class="flown-through-label" for="flown-through-check">
         <input type="checkbox" id="flown-through-check" name="flown_through" value="true">
@@ -462,19 +500,24 @@
       </label>
       <div class="country-form-footer">
         <span id="country-form-message" class="country-form-message"></span>
-        <button type="button" id="undo-country-btn" class="undo-country-btn" style="display:none;"></button>
       </div>
     </form>
   </div>
+  {% endif %}
 
   <!-- Title: one clean text line -->
   <div class="title-bar">
-    <h1>{{title}} {{stat_string}}</h1>
+    <h1>{{title}} {{stat_string}}<span id="displayedCount"></span></h1>
   </div>
 
-  <!-- Year slider: cumulative "visited by year X" filter -->
+  <!-- Year slider: "Up to" (cumulative, visited by year X) or "Only"
+       (visited in exactly year X) -- see applyYearFilter below. -->
   {% if mapbox_bounds_json %}
   <div class="year-slider-bar">
+    <div class="year-mode-toggle" id="yearModeToggle">
+      <button type="button" class="year-mode-btn active" data-mode="cumulative">Up to</button>
+      <button type="button" class="year-mode-btn" data-mode="only">Only</button>
+    </div>
     <span class="year-slider-value" id="yearSliderValue">&nbsp;</span>
     <input type="range" id="yearSlider" step="1">
   </div>
@@ -671,33 +714,52 @@
         resizeTimer = setTimeout(scheduleRefit, 250);
       });
 
-      // Year slider: cumulative "counties visited by year X" filter.
-      // The displayed color still comes from each county's *most recent*
-      // visit year (the z values baked into the figure server-side), but
-      // the show/hide test below consults mapBounds.firstVisitYear (the
-      // *first* visit year, from the full county_visits history) instead
-      // -- a cumulative "visited by year X" filter is logically a
-      // question about when a county was *first* visited, not most
-      // recently, so a county visited in both 2015 and 2022 correctly
-      // shows from 2015 onward, not just 2022. Recolors entirely
-      // client-side via Plotly.restyle -- no server round-trip.
+      // Year slider: two modes, switched by the Up-to/Only segmented
+      // control (#yearModeToggle). "cumulative" (default) shows every
+      // county/state first-visited on or before the slider year -- the
+      // show/hide test consults mapBounds.firstVisitYear (the *first*
+      // visit year, from the full county_visits/state history), so an
+      // entity visited in both 2015 and 2022 correctly shows from 2015
+      // onward, not just 2022. "only" shows exclusively entities
+      // actually visited in that exact year (mapBounds.visitedYears,
+      // the full per-entity year list), all rendered at one flat z (the
+      // cutoff year itself) -- deliberately flat, since a gradient
+      // encodes "how long ago", which isn't meaningful once already
+      // filtered to one exact year. Both modes recolor entirely
+      // client-side -- no server round-trip.
+      //
+      // coloraxis.cmax is rescaled to the slider's own cutoff on every
+      // move (cmin stays fixed at the true global floor) rather than
+      // left at whatever the page loaded with -- without this, the
+      // gradient's top end stays pinned to the *global* most-recent
+      // year (2026 right now) even while looking at, say, 2018, so most
+      // of the color range is wasted on years past the current cutoff
+      // and everything visible gets compressed into a narrow band.
+      // Rescaling to the cutoff means the fullest/darkest color always
+      // means "as recent as what you're currently looking at" --
+      // including in "only" mode, where every match then renders at the
+      // single darkest shade (all sharing z==cutoff==cmax) rather than
+      // whatever arbitrary position that year happens to sit at on a
+      // scale that still reserves room up to 2026.
       var slider = document.getElementById('yearSlider');
       var sliderValueLabel = document.getElementById('yearSliderValue');
+      var modeButtons = document.querySelectorAll('.year-mode-btn');
+      var displayedCountEl = document.getElementById('displayedCount');
 
       if (slider && mapBounds.yearRange) {
         var YEAR_BASE = 2000;   // matches location_db.get_county_visits_dataframe()
         var UNVISITED_Z = -1;
         var yearMin = mapBounds.yearRange[0];
         var yearMax = mapBounds.yearRange[1];
-        // Absent (e.g. on /states, which has no per-county history) or
-        // for a county not yet in county_visits (pre-backfill transitional
-        // state) -- falls back to v itself below, same as before this fix.
+        // Empty for a county/state not yet in the ledger (pre-backfill
+        // transitional state) -- falls back to v itself below.
         var firstVisitYear = mapBounds.firstVisitYear || {};
+        var visitedYears = mapBounds.visitedYears || {};
+        var currentMode = 'cumulative';
 
         slider.min = yearMin;
         slider.max = yearMax;
         slider.value = yearMax;
-        sliderValueLabel.textContent = 'Through ' + yearMax;
 
         // Snapshot the true, unfiltered year for each trace so every
         // slider move recomputes from the original data rather than
@@ -708,7 +770,6 @@
 
         function applyYearFilter() {
           var cutoff = parseInt(slider.value, 10);
-          sliderValueLabel.textContent = 'Through ' + cutoff;
           var cutoffOffset = cutoff - YEAR_BASE;
 
           var traceIndices = [];
@@ -719,15 +780,58 @@
             traceIndices.push(idx);
             newZ.push(z.map(function(v, i) {
               var fips = locs[i];
+              if (currentMode === 'only') {
+                var years = visitedYears.hasOwnProperty(fips) ? visitedYears[fips] : [];
+                return years.indexOf(cutoffOffset) !== -1 ? cutoffOffset : UNVISITED_Z;
+              }
               var firstYear = firstVisitYear.hasOwnProperty(fips) ? firstVisitYear[fips] : v;
               return (v > UNVISITED_Z && firstYear > cutoffOffset) ? UNVISITED_Z : v;
             }));
           });
 
-          Plotly.restyle('chart', {z: newZ}, traceIndices);
+          sliderValueLabel.textContent = (currentMode === 'only' ? 'Only ' : 'Through ') + cutoff;
+
+          // Count against trace 0 (the main map) specifically, not a sum
+          // across all traces -- the AK/HI inset traces redraw a subset
+          // of the *same* counties/states shown on the main map (see
+          // main_df/ak_df/hi_df server-side), so summing every trace
+          // would double-count them.
+          var mainPos = traceIndices.indexOf(0);
+          if (displayedCountEl && mainPos !== -1) {
+            var displayedCount = newZ[mainPos].filter(function(v) { return v > UNVISITED_Z; }).length;
+            displayedCountEl.textContent = ' (' + displayedCount.toLocaleString() + ' visited ' +
+              (currentMode === 'only' ? 'only in ' : 'up to ') + cutoff + ')';
+          }
+
+          // cmin deliberately stays UNVISITED_Z, not yearMin -- pinning it
+          // to the exact ledger floor put whichever county holds that
+          // floor exactly at position 0 of the gradient on every single
+          // reachable cutoff, which maps to colorscale_county's special
+          // pale override color (meant for "barely more recent than
+          // nothing"), not a true value -- a real find from testing:
+          // the county that defines the floor is exactly the one this
+          // made hardest to see. UNVISITED_Z leaves genuine headroom
+          // below every real year, however far back it goes.
+          Plotly.update('chart', {z: newZ}, {'coloraxis.cmin': UNVISITED_Z, 'coloraxis.cmax': cutoffOffset}, traceIndices);
         }
 
         slider.addEventListener('input', applyYearFilter);
+
+        modeButtons.forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            if (btn.classList.contains('active')) return;
+            modeButtons.forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            currentMode = btn.dataset.mode;
+            applyYearFilter();
+          });
+        });
+
+        // Initial paint: sets the label, banner count, and coloraxis
+        // range for the default (cumulative, cutoff = yearMax) state --
+        // one code path for this instead of duplicating slightly
+        // different setup logic inline.
+        applyYearFilter();
       }
 
       // County hover: replace the Plotly-default (raw FIPS + internal
@@ -861,6 +965,7 @@
         }
         var top = stack[stack.length - 1];
         undoBtn.textContent = 'Undo ' + top.name;
+        undoBtn.title = 'Undo ' + top.name;
         undoBtn.style.display = '';
       }
 

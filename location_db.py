@@ -87,6 +87,25 @@ class locationDB:
                 Column('year', Integer, primary_key=True),
             )
 
+        # Historical GPX trip points (pre-GPS-logging-era exports, only the
+        # calendar year is known) -- deliberately separate from `positions`
+        # rather than inserted there with a synthesized timestamp, so they
+        # never intermingle with real device-logged GPS history. See
+        # load_historical_points.py / process_historical_points.py.
+        self.historical_points = Table('historical_points', metadata,
+                Column('id', Integer, primary_key=True),
+                Column('source_file', String),
+                Column('year', Integer),
+                Column('latitude', Float),
+                Column('longitude', Float),
+                Column('county_computed', Boolean, default=False),
+                # Resolved by the polygon lookup, NULL until computed (and
+                # stays NULL if the point falls outside every county) --
+                # stored so re-deriving each file's county set doesn't
+                # require redoing the lookup on already-computed points.
+                Column('fips', String, nullable=True),
+            )
+
         if not database_exists(self.engine.url):
             metadata.create_all(self.engine)        
 
@@ -109,6 +128,23 @@ class locationDB:
             if not exist_cv:
                 print("Need to add county_visits table")
                 metadata.create_all(self.engine)
+
+            exist_hp = insp.has_table("historical_points")
+            if not exist_hp:
+                print("Need to add historical_points table")
+                metadata.create_all(self.engine)
+            else:
+                hp_columns = [c['name'] for c in insp.get_columns('historical_points')]
+                if 'fips' not in hp_columns:
+                    # VARCHAR, not "String" -- SQLite has no such type
+                    # keyword, and an unrecognized one falls back to
+                    # NUMERIC affinity (SQLite's type-affinity rules),
+                    # which would silently coerce a zero-padded fips
+                    # string like '04019' into the integer 4019.
+                    sql_insert = 'alter table historical_points add column fips VARCHAR'
+                    with self.engine.begin() as conn2:
+                        conn2.execute(text(sql_insert))
+                        conn2.commit()
 
             # Check that the table has a 'county_computed' field
             columns = insp.get_columns('positions')
@@ -445,6 +481,97 @@ class locationDB:
         for fips, year in result:
             years_by_fips.setdefault(fips, []).append(year)
         return years_by_fips
+
+    def get_state_visit_years_dict(self):
+        # .distinct() matters here, unlike get_county_visit_years_dict --
+        # multiple counties in the same state visited in the same year
+        # would otherwise produce duplicate (state, year) rows.
+        query = select(self.us_counties.c.state, self.county_visits.c.year) \
+            .select_from(self.county_visits.join(self.us_counties, self.county_visits.c.fips == self.us_counties.c.fips)) \
+            .distinct() \
+            .order_by(self.us_counties.c.state, self.county_visits.c.year)
+        result = self.conn.execute(query).fetchall()
+
+        years_by_state = {}
+        for state, year in result:
+            years_by_state.setdefault(state, []).append(year)
+        return years_by_state
+
+    def insert_historical_points_batch(self, rows: list):
+        # rows: list of dicts with source_file/year/latitude/longitude.
+        # One executemany-style insert per file rather than insert_location's
+        # per-point commit -- fine for that method's real-time single-point
+        # use case, far too slow for loading tens of thousands of points
+        # from one GPX file at once.
+        if not rows:
+            return
+        self.conn.execute(self.historical_points.insert(), rows)
+        self.conn.commit()
+
+    def get_loaded_historical_source_files(self):
+        result = self.conn.execute(select(self.historical_points.c.source_file).distinct())
+        return set(r[0] for r in result.fetchall())
+
+    def get_unprocessed_historical_points_dataframe(self):
+        query = select(self.historical_points.c.id, self.historical_points.c.source_file,
+                        self.historical_points.c.latitude, self.historical_points.c.longitude) \
+            .where(self.historical_points.c.county_computed == False) \
+            .order_by(self.historical_points.c.source_file, self.historical_points.c.id)
+        result = self.conn.execute(query).fetchall()
+        return pd.DataFrame(result, columns=['id', 'source_file', 'latitude', 'longitude'])
+
+    def set_historical_points_fips_batch(self, updates: list):
+        # updates: list of dicts with id/fips (fips may be None -- a point
+        # outside every county). Bind param names deliberately don't match
+        # the column names (SQLAlchemy's executemany-update idiom for
+        # per-row different WHERE-matched values).
+        if not updates:
+            return
+        stmt = self.historical_points.update() \
+            .where(self.historical_points.c.id == sqlalchemy.bindparam('b_id')) \
+            .values(fips=sqlalchemy.bindparam('b_fips'), county_computed=True)
+        renamed = [{'b_id': u['id'], 'b_fips': u['fips']} for u in updates]
+        self.conn.execute(stmt, renamed)
+        self.conn.commit()
+
+    def get_county_status(self, fips: str):
+        # name/state/visited for one county, or None if fips doesn't
+        # match anything -- same shape/purpose as get_country_status.
+        row = self.conn.execute(
+            select(self.us_counties.c.name, self.us_counties.c.state, self.us_counties.c.visited)
+            .where(self.us_counties.c.fips == fips)
+        ).fetchone()
+        if row is None:
+            return None
+        return {'name': row.name, 'state': row.state, 'visited': bool(row.visited)}
+
+    def has_any_county_evidence(self, fips: str):
+        # counties.visited == True only reflects set_visited_county calls
+        # (ongoing pipeline, or the old pre-county_visits add_historical_
+        # counties.py seeding) -- record_county_visit_year (backfill mode,
+        # and this historical_points pipeline's own commits) deliberately
+        # never touches it, the same way backfill mode never touches it
+        # for the live map's sake. So a fips with real evidence only via
+        # county_visits (recent GPS-derived backfill, or a previously-
+        # approved historical file) would wrongly look uncorroborated if
+        # only counties.visited were checked -- this checks both.
+        status = self.get_county_status(fips)
+        if status and status['visited']:
+            return True
+        ledger_hit = self.conn.execute(
+            select(self.county_visits.c.fips).where(self.county_visits.c.fips == fips)
+        ).fetchone()
+        return ledger_hit is not None
+
+    def get_historical_county_file_sets(self):
+        # One row per distinct (source_file, fips) pair actually found --
+        # year is constant per file (the whole trip has one manifest year),
+        # so any one row per group carries the right value.
+        query = select(self.historical_points.c.source_file, self.historical_points.c.fips,
+                        self.historical_points.c.year) \
+            .where(self.historical_points.c.fips.isnot(None)) \
+            .distinct()
+        return self.conn.execute(query).fetchall()
 
     def set_visited_multiple_counties(self, county_fips_ids: list):
         # Check that the fips is in the table

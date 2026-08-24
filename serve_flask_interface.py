@@ -387,24 +387,15 @@ class FlaskApp(FlaskView):
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
 
-        # Sourced from the full county_visits history rather than
-        # counties.year (which is min-of-per-county-*maxes*, not a true
-        # global minimum -- a county whose only visit was 2010 would set
-        # the floor at 2010 even if some other county's first, but not
-        # only, visit was 2002). Falls back to the old counties.year-based
-        # computation only in the pre-backfill transitional state, when
-        # county_visits is still empty.
-        all_visit_years = [y for years in self.database.get_county_visit_years_dict().values() for y in years]
-        if all_visit_years:
-            self.year_min = min(all_visit_years)
-            self.year_max = max(all_visit_years)
-        else:
-            visited_years = county_df.loc[county_df['year'] > -1, 'year']
-            if len(visited_years) > 0:
-                self.year_min = int(visited_years.min()) + 2000
-                self.year_max = int(visited_years.max()) + 2000
-            else:
-                self.year_min = self.year_max = datetime.now().year
+        # year_min/year_max moved out of this cached computation --
+        # see serve_county_graph, computed fresh every request now, for
+        # the same staleness reason firstVisitYear/countyHoverText
+        # already are: a historical-points commit (or any other run
+        # that only writes to county_visits without touching
+        # counties.visited/year) doesn't change num_visited or
+        # avg_county_year, so it would never trigger a recompute here --
+        # the slider's floor could stay wrong indefinitely after adding
+        # an earlier year, not just briefly.
 
         # Three separate mapbox subplots (continental US, plus small
         # Alaska/Hawaii insets) instead of a single geo/choropleth
@@ -631,13 +622,51 @@ class FlaskApp(FlaskView):
 
         first_visit_year = {}
         county_hover_text = {}
-        for fips, name, state in zip(county_df['FIPS'], county_df['name'], county_df['state']):
+        visited_years = {}
+        for fips, name, state, cache_year in zip(county_df['FIPS'], county_df['name'], county_df['state'], county_df['year']):
             years = years_by_fips.get(fips, [])
+            if not years and cache_year > -1:
+                # No county_visits rows at all, but counties.year says
+                # otherwise -- a pre-county_visits visit (the old
+                # add_historical_counties.py seeding, before this ledger
+                # existed to record it into). Falls back to that one
+                # known year rather than treating it as literally
+                # unvisited: "only" mode would otherwise have nothing to
+                # ever match against for these counties (no ledger entry
+                # means an always-empty year list), even though we do
+                # know -- just not with full-ledger granularity -- when
+                # they were visited. county_df['year'] is itself already
+                # offset by -2000 (get_county_visits_dataframe's own
+                # doing) -- undo that here so it's a raw year, matching
+                # years_by_fips' convention, before the shared -2000
+                # logic below reapplies the same offset for the client
+                # payload.
+                years = [cache_year + 2000]
             if years:
                 first_visit_year[fips] = min(years) - 2000  # same offset convention as the z values below
                 county_hover_text[fips] = f"{name}, {state} — {_format_year_ranges(years)}"
+                visited_years[fips] = [y - 2000 for y in years]
             else:
                 county_hover_text[fips] = f"{name}, {state} — not yet visited"
+
+        # True global min/max across the full ledger, computed fresh here
+        # (not cached in __precompute_graph -- see the comment left there)
+        # rather than counties.year's min-of-per-county-*maxes*, which
+        # could undercount how far back the slider's floor needs to
+        # reach. Falls back to the old counties.year-based computation
+        # only in the pre-backfill transitional state, when county_visits
+        # is still empty.
+        all_visit_years = [y for years in years_by_fips.values() for y in years]
+        if all_visit_years:
+            year_min = min(all_visit_years)
+            year_max = max(all_visit_years)
+        else:
+            cached_years = county_df.loc[county_df['year'] > -1, 'year']
+            if len(cached_years) > 0:
+                year_min = int(cached_years.min()) + 2000
+                year_max = int(cached_years.max()) + 2000
+            else:
+                year_min = year_max = datetime.now().year
 
         # The server can't know the visitor's actual screen size, so
         # the zoom/center baked into the figure above is only a
@@ -649,8 +678,9 @@ class FlaskApp(FlaskView):
                 'mapbox': list(map(float, self.conti_bounds)),
                 'mapbox2': list(map(float, self.ak_bounds)),
                 'mapbox3': list(map(float, self.hi_bounds)),
-                'yearRange': [self.year_min, self.year_max],
+                'yearRange': [year_min, year_max],
                 'firstVisitYear': first_visit_year,
+                'visitedYears': visited_years,
                 'countyHoverText': county_hover_text,
             })
 
@@ -887,6 +917,7 @@ class FlaskApp(FlaskView):
             title='Visited Countries',
             more_html=country_cards,
             full_bleed_map=True,
+            show_country_bar=True,
             page_title='OwnTracks - Visited Countries')
 
 
@@ -945,21 +976,62 @@ class FlaskApp(FlaskView):
         county_df = self.database.get_county_visits_dataframe()
         state_cards = self._compute_table(county_df)
 
-        # state_df['year'] is -1 for never-visited, else (real year -
-        # 2000) -- see location_db.get_state_visits_dataframe(). Used
-        # to bound the client-side year slider, same as /counties.
-        visited_years = state_df.loc[state_df['year'] > -1, 'year']
-        if len(visited_years) > 0:
-            year_min = int(visited_years.min()) + 2000
-            year_max = int(visited_years.max()) + 2000
+        # Per-state visit-year history, same idea as /counties'
+        # firstVisitYear/visitedYears/countyHoverText (see
+        # serve_county_graph above) -- powers both the cumulative
+        # "up to this year" slider mode and the "only this year" mode.
+        years_by_state = self.database.get_state_visit_years_dict()
+        first_visit_year = {}
+        state_hover_text = {}
+        visited_years = {}
+        for state, cache_year in zip(main_df['state'], main_df['year']):
+            state_name = config.abbrev_to_us_state.get(state, state)
+            years = years_by_state.get(state, [])
+            if not years and cache_year > -1:
+                # Same pre-county_visits fallback as serve_county_graph
+                # above -- a state whose only evidence is a county visited
+                # via the old add_historical_counties.py seeding, before
+                # this ledger existed. cache_year is already offset by
+                # -2000 (get_state_visits_dataframe's own doing, same
+                # convention as counties) -- undo that before reusing the
+                # shared -2000 logic below.
+                years = [cache_year + 2000]
+            if years:
+                first_visit_year[state] = min(years) - 2000
+                state_hover_text[state] = f"{state_name} — {_format_year_ranges(years)}"
+                visited_years[state] = [y - 2000 for y in years]
+            else:
+                state_hover_text[state] = f"{state_name} — not yet visited"
+
+        # True global min/max across the full ledger, computed fresh here
+        # every request -- same fix /counties has in serve_county_graph
+        # (deliberately *not* cached in a __precompute_graph-style method
+        # for either page, so a historical-points commit that only adds
+        # an earlier year can't leave this stale). A state's own cached
+        # year used to be the max of its counties' *max* years, which
+        # could sit later than that state's true first visit. Falls back
+        # to the old counties-cache-derived computation only if the
+        # ledger is empty (pre-backfill transitional state).
+        all_years = [y for years in years_by_state.values() for y in years]
+        if all_years:
+            year_min = min(all_years)
+            year_max = max(all_years)
         else:
-            year_min = year_max = datetime.now().year
+            cached_years = state_df.loc[state_df['year'] > -1, 'year']
+            if len(cached_years) > 0:
+                year_min = int(cached_years.min()) + 2000
+                year_max = int(cached_years.max()) + 2000
+            else:
+                year_min = year_max = datetime.now().year
 
         mapbox_bounds_json = json.dumps({
                 'mapbox': list(map(float, self.conti_bounds)),
                 'mapbox2': list(map(float, self.ak_bounds)),
                 'mapbox3': list(map(float, self.hi_bounds)),
                 'yearRange': [year_min, year_max],
+                'firstVisitYear': first_visit_year,
+                'visitedYears': visited_years,
+                'countyHoverText': state_hover_text,
             })
 
         return render_template('notdash.html',

@@ -64,10 +64,11 @@ class CountyAdder(object):
         # self.alldata = self.database.get_points_to_parse_dataframe(start_utc = 1718682342, num_points=num_points)
         # self.alldata = self.database.get_points_to_parse_dataframe(start_utc = 1722543816, num_points=num_points)
         self.alldata = self.database.get_points_to_parse_dataframe(num_points=num_points, column=self.processed_column)
-        self.utc_index = self.alldata.utc.to_numpy()
 
         if self.alldata is None:
             exit()
+
+        self.utc_index = self.alldata.utc.to_numpy()
 
         self.alldata['simple_speed'] = 999.0
         self.alldata['averaged_speed'] = 999.0
