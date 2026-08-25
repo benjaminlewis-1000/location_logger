@@ -845,7 +845,16 @@
         var hoverTraceIndices = [];
         var customdataUpdate = [];
         graphs.data.forEach(function(trace, idx) {
-          if (!trace.locations) return;
+          // Skip the state-boundary overlay trace (hoverinfo:'skip',
+          // added deliberately so it can't swallow county hover -- see
+          // serve_county_graph). Restyling it with a real hovertemplate
+          // anyway re-enables its hover despite hoverinfo:'skip', and
+          // since it's the topmost trace covering the whole map with
+          // blank customdata (its locations are state codes, never
+          // matched in countyHoverText), it wins hover almost
+          // everywhere -- the actual bug behind "only a few counties
+          // have tooltips, and they swallow the mouseover around them."
+          if (!trace.locations || trace.hoverinfo === 'skip') return;
           hoverTraceIndices.push(idx);
           customdataUpdate.push(trace.locations.map(function(fips) {
             return countyHoverText[fips] || '';
