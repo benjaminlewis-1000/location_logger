@@ -85,11 +85,17 @@ def _clean_redirect_target():
     # previous redirect URL into the new one, and the URL grows without
     # bound on repeated failures until it exceeds the server's request
     # line limit.
+    #
+    # request.base_url, not used here -- see _external_base_url()'s own
+    # comment for why that's broken under real ProxyFix-rewritten
+    # traffic. This is the highest-impact of the three known-affected
+    # call sites, since authelia_required wraps nearly every route.
+    base = f"{_external_base_url()}{request.path}"
     other_args = request.args.to_dict()
     other_args.pop('rd', None)
     if other_args:
-        return f"{request.base_url}?{urlencode(other_args)}"
-    return request.base_url
+        return f"{base}?{urlencode(other_args)}"
+    return base
 
 def _rate_limited(min_interval_seconds):
     # Simple, dependency-free per-IP throttle -- correct with no
@@ -1311,7 +1317,13 @@ class FlaskApp(FlaskView):
             data_lons = data['lon'].tolist()
             data_ids = data['id'].tolist()
 
-            base_url_https = re.sub('^http:', 'https:', request.base_url)
+            # request.base_url, not used here -- see _external_base_url()'s
+            # own comment for why that's broken under real ProxyFix-
+            # rewritten traffic. The http->https force-replace is kept
+            # as-is on top, preserving the original defensive behavior
+            # rather than assuming ProxyFix's x_proto rewrite alone is
+            # now sufficient.
+            base_url_https = re.sub('^http:', 'https:', f"{_external_base_url()}{request.path}")
 
             if 'points' in vals:
                 markers = [{'icon': 'http://maps.google.com/mapfiles/ms/icons/green-dot.png', 
@@ -1517,8 +1529,11 @@ class FlaskApp(FlaskView):
     @route('/logout')
     def logout(self):
         # 1. Clear any local Flask session data if you use it
-        # session.clear() 
-        target = f"{AUTHELIA_URL}/logout?rd={request.url_root}"
+        # session.clear()
+        # request.url_root, not used here -- see _external_base_url()'s
+        # own comment for why that's broken under real ProxyFix-
+        # rewritten traffic.
+        target = f"{AUTHELIA_URL}/logout?rd={_external_base_url()}/"
         response = make_response(redirect(target))
     
         # 2. Explicitly clear the cookie on the browser
