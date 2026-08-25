@@ -24,11 +24,15 @@ from flask_googlemaps import GoogleMaps, Map
 from werkzeug.utils import secure_filename
 import dateutil
 import dateutil.parser
-import test_flask
+import config
+import location_db
 
-conn = test_flask.conn
-users = test_flask.users
-positions = test_flask.positions
+database = location_db.locationDB(db_name=config.database_location,
+        fips_file=config.county_fips_file,
+        country_file=config.country_file)
+
+conn = database.conn
+positions = database.positions
 
 ll_pairs = [
     # (2015, 23.74,  -162.0,  16.8,   -152.8,),

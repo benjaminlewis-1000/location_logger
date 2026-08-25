@@ -67,14 +67,13 @@ files = [
         ('to_branson.gpx', 2004),
         ('trip_to_park_ca.gpx', 2012),
         ('tuscon.gpx', 2014),
-        # Not yet placed under root_dir -- uncomment once found/added:
-        # ('to_chicago_2016.gpx', 2016),
-        # ('to_palmyra.gpx', 2017),
-        # ('raleigh_1.gpx', 2017),
-        # ('raleigh_2.gpx', 2017),
-        # ('nick_trip.gpx', 2014),
-        # ('sharon_vt.gpx', 2005),
-        # ('story_land.gpx', 2005),
+        ('to_chicago_2016.gpx', 2016),
+        ('to_palmyra.gpx', 2017),
+        ('raleigh_1.gpx', 2017),
+        ('raleigh_2.gpx', 2017),
+        ('nick_trip.gpx', 2014),
+        ('sharon_vt.gpx', 2005),
+        ('story_land.gpx', 2005),
         ]
 
 
