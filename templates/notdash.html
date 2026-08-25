@@ -1,46 +1,259 @@
 <!doctype html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
   <title>{{page_title}}</title>
   <style>
-    body {
+    html, body {
       font-family: Arial, sans-serif;
       margin: 0;
       padding: 0;
       text-align: center;
     }
 
-    h1 {
-      margin-top: 1rem;
-      text-align: initial;
-      margin-left: 2rem;
+    /* ===== Base layout: normal top-to-bottom page. Used as-is on
+       pages with a table (states/countries/state_view) -- solid
+       backgrounds throughout, map sized to a reasonable chunk of the
+       page rather than filling it. The map-only page (counties, no
+       table) overrides this below into a full-bleed background. ===== */
+
+    /* Nav buttons + Logout: one row, all the same height. Overrides
+       example.css's position/width rules for .btn (fixed 90px) and
+       .button-container/.top-right-nav (position: absolute), which
+       otherwise pull them out of normal document flow. */
+    .top-bar {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 0.4rem;
+      background: #fff;
+      padding: 0.4rem 0.5rem;
+      box-sizing: border-box;
     }
 
-    .button-container {
-      margin: -1rem 1.5rem;
+    .top-bar .btn,
+    .top-bar .logout-btn {
+      position: static;
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      margin: 0;
+      padding: 8px 4px;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
     }
 
-    .content-wrapper {
-      max-width: 90vw;   /* keep content within viewport */
-      margin: 4rem auto;    /* center horizontally */
+    /* "Add Country" row: overrides example.css's #country-form/.form-inline
+       rules (fixed position, and a column layout below 800px) so it
+       stays one row with the input flexing to fill remaining space. */
+    .country-bar {
+      background: #fff;
+      padding: 0.4rem 0.5rem;
+      box-sizing: border-box;
     }
 
-    .plotly-container {
-      display: flex; /* Enables Flexbox */
-      justify-content: center; /* Horizontally centers content */
-      align-items: center; /* Vertically centers content (optional) */
-    }
-
-    #chart {
-      /* width: 100vw;        /* chart only takes 80% of screen width */
+    .country-bar #country-form {
+      position: static;
+      top: auto;
+      left: auto;
+      height: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      max-width: 480px;
       margin: 0 auto;
     }
 
+    /* The name/code input, submit button, and their label -- was the
+       whole form's layout before the flown-through checkbox needed
+       its own row underneath instead of fighting for space in this
+       one on narrow screens. */
+    .country-bar #country-form .country-input-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .country-bar #country-form label {
+      flex: 0 0 auto;
+      margin: 0;
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+
+    .country-bar #country-form .flown-through-label {
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.75rem;
+      color: #555;
+      cursor: pointer;
+    }
+
+    .country-bar #country-form .flown-through-label input[type="checkbox"] {
+      margin: 0;
+    }
+
+    .country-form-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    /* Inline success/error feedback after a fetch()-based submit --
+       empty and invisible until JS fills it in. */
+    .country-form-message {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 0.75rem;
+      min-height: 1em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .country-form-message.success {
+      color: #1a7a3c;
+    }
+
+    .country-form-message.error {
+      color: #c0392b;
+    }
+
+    /* Hidden (inline style) until JS finds at least one undoable
+       action in localStorage -- see the undo IIFE below. Sits in
+       .country-input-row alongside the input/Submit; min-width:0 lets
+       it shrink instead of forcing the row to wrap, and the input
+       itself (flex:1 1 auto, min-width:0) is what actually gives up
+       space first -- max-width here is just a backstop against a
+       pathologically long country name, not the primary constraint. */
+    .undo-country-btn {
+      flex: 0 1 auto;
+      min-width: 0;
+      background: none;
+      border: 1px solid #999;
+      border-radius: 4px;
+      color: #333;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      cursor: pointer;
+      max-width: 45%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .undo-country-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    /* Wraps the input so the suggestions dropdown (absolutely
+       positioned) has something to anchor to -- takes over the flex
+       sizing the input itself used to have directly. */
+    .country-bar #country-form .country-autocomplete {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .country-bar #country-form input {
+      width: 100%;
+      margin: 0;
+      padding: 6px 8px;
+      font-size: 0.85rem;
+      box-sizing: border-box;
+    }
+
+    .country-bar #country-form button {
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+    }
+
+    /* Add Country autocomplete dropdown -- filters client-side as you
+       type, matching name or either ISO code (see the JS below). */
+    .country-suggestions {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      margin-top: 2px;
+      max-height: 240px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      z-index: 5;
+      text-align: left;
+    }
+
+    .country-suggestions.open {
+      display: block;
+    }
+
+    .country-suggestion-item {
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .country-suggestion-item:hover {
+      background: #eaeef3;
+    }
+
+    .country-suggestion-code {
+      color: #777;
+      margin-left: 0.4rem;
+    }
+
+    .title-bar {
+      background: #fff;
+      padding: 0.4rem 0.75rem;
+      box-sizing: border-box;
+    }
+
+    h1 {
+      margin: 0;
+      text-align: initial;
+      font-size: 1.1rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #chart {
+      width: 100%;
+      height: 55vh;
+      min-height: 320px;
+      box-sizing: border-box;
+    }
+
     .table-container {
-      width: 60vw;
-      margin: 2rem auto;
-      /*overflow-x: auto;   /* allow scroll if absolutely necessary */
+      width: 100%;
+      max-width: 900px;
+      margin: 1rem auto 2rem;
+      background: #fff;
+      padding: 0 1rem 1rem;
+      box-sizing: border-box;
+      overflow-x: auto;
     }
 
     .dataframe {
@@ -48,13 +261,8 @@
     }
 
     .table-container table {
-      width: 60vw;
       margin: 0 auto;
       border-collapse: collapse;
-    }
-
-    .main-svg .svg-container { /* Overwrite Python properties */
-      width: 100%;
     }
 
     .table-container th,
@@ -63,52 +271,857 @@
       padding: 8px 12px;
       text-align: center;
     }
+
+    /* State list as a responsive card grid: one column when narrow
+       (mobile), auto-fitting to more columns as width allows (desktop)
+       -- driven entirely by available width, no device detection. */
+    .state-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.6rem;
+    }
+
+    .state-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 0.9rem;
+      background: #f5f7fa;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .state-card:hover {
+      background: #eaeef3;
+    }
+
+    .state-card-name {
+      font-weight: bold;
+      text-align: left;
+    }
+
+    .state-card-stat {
+      color: #555;
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+
+    /* Sits between the visited card grid and the flown-through one
+       below it (see _compute_country_cards). */
+    .country-section-header {
+      margin: 1rem 0 0.6rem;
+      font-size: 1rem;
+      font-weight: bold;
+      text-align: left;
+      color: #333;
+    }
+
+    /* ===== map-only override: full-bleed background map. A page with
+       no table (counties) makes the map the entire page. A page that
+       also has a table (countries) needs the .with-table shrink below
+       -- #chart is position:fixed, so at full 100svh height it covers
+       the *entire* viewport at every scroll position, not just at the
+       top. Combined with touch-action:none, that leaves literally no
+       spot on screen where a touch can start a native scroll once the
+       (non-fixed, in-flow) header bars have scrolled out of view --
+       the page gets stuck, unreachable at either end, until reload. ===== */
+    body.map-only {
+      height: 100%;
+    }
+
+    body.map-only #chart {
+      touch-action: none;   /* let Plotly's own pinch/pan handle mobile gestures */
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;   /* fallback for browsers without svh support */
+      height: 100svh;  /* "small" viewport height -- the guaranteed-visible
+                          size, unlike 100vh which on mobile is often the
+                          *largest* possible size (address bar hidden) and
+                          can extend below what's actually on screen */
+      z-index: 0;
+    }
+
+    /* Cap the map short of the full viewport so a permanent, non-map
+       strip is always on screen -- regardless of scroll position -- for
+       native touch-scroll to latch onto. Matches the table's margin-top
+       below so the table starts right where the map ends, no dead gap. */
+    body.map-only.with-table #chart {
+      height: 90vh;
+      height: 90svh;
+    }
+
+    body.map-only .top-bar,
+    body.map-only .title-bar {
+      position: relative;
+      z-index: 1;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* Higher than .top-bar/.title-bar (and .year-slider-bar below):
+       z-index only ranks elements against siblings within the same
+       stacking context, and .country-bar is that context for the
+       autocomplete dropdown inside it (position:relative promotes it
+       to one). The dropdown's own z-index:5 only wins locally, within
+       .country-bar -- .country-bar itself was tied at z-index:1 with
+       .title-bar, and lost that tie by coming first in the DOM, so the
+       whole dropdown (bar and all) painted under the title text. */
+    body.map-only .country-bar {
+      position: relative;
+      z-index: 3;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    /* #chart is fixed and takes no space in the document flow, so
+       without this the table would start right under the header bars
+       and hide the map immediately instead of leaving it visible until
+       scrolled past. margin-top pushes the table down to start right
+       where the (now 90%-capped, see .with-table above) map ends;
+       position/z-index is the same "paint above the fixed map"
+       treatment as the header bars use. */
+    body.map-only.with-table .table-container {
+      position: relative;
+      z-index: 1;
+      margin-top: 90vh;
+      margin-top: 90svh;
+      padding-top: 1rem;   /* breathing room above the first row of cards --
+                               the base .table-container rule has no
+                               padding-top, so cards would otherwise sit
+                               flush against the container's top edge */
+    }
+
+    /* Year slider: replaces the old static colorbar. Portrait gets a
+       horizontal bar in the stacked header (matches the other rows);
+       landscape floats it vertically on the right edge instead, since
+       landscape screens are short on vertical space to spare. */
+    body.map-only .year-slider-bar {
+      position: relative;
+      z-index: 1;
+      background: rgba(255, 255, 255, 0.9);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.75rem;
+      box-sizing: border-box;
+      font-size: 0.85rem;
+    }
+
+    body.map-only .year-slider-bar input[type="range"] {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    body.map-only .year-slider-value {
+      flex: 0 0 auto;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+
+    /* "Up to" (cumulative) / "Only" (exact year) mode switch --
+       a small segmented control in front of the year value/slider. */
+    .year-mode-toggle {
+      display: flex;
+      flex: 0 0 auto;
+      border: 1px solid #999;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .year-mode-btn {
+      flex: 0 0 auto;
+      background: #fff;
+      border: none;
+      color: #333;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+
+    .year-mode-btn + .year-mode-btn {
+      border-left: 1px solid #999;
+    }
+
+    .year-mode-btn.active {
+      background: #32D172;
+      color: #fff;
+      font-weight: bold;
+    }
+
+    @media (orientation: landscape) {
+      body.map-only .year-slider-bar {
+        position: fixed;
+        top: 50%;
+        right: 0.5rem;
+        transform: translateY(-50%);
+        flex-direction: column;
+        width: auto;
+        height: 260px;
+        border-radius: 8px;
+        z-index: 2;
+      }
+
+      body.map-only .year-slider-bar input[type="range"] {
+        writing-mode: vertical-lr;
+        width: 8px;
+      }
+    }
   </style>
 </head>
-<body>
-  <!-- Title -->
-  <h1>{{title}} {{stat_string}}</h1>
-
-
-  <div class="top-right-nav">
-    <a href="/logout" class="logout-btn">Logout</a>
-  </div>
-
-
-  <!-- Buttons + form -->
-  <div class="button-container">
+<body class="{{ 'map-only' if full_bleed_map else 'has-table' }}{{ ' with-table' if full_bleed_map and more_html else '' }}">
+  <!-- Nav buttons + Logout: one clean row -->
+  <div class="top-bar">
     <a class='btn' href="counties">Counties</a>
     <a class='btn' href="states">States</a>
     <a class='btn' href="countries">Countries</a>
     <a class='btn' href="/">Map</a>
+    <a href="/logout" class="logout-btn">Logout</a>
+  </div>
 
+  <!-- Add Country -->
+  {% if show_country_bar %}
+  <div class="country-bar">
     <form class="form-inline" id="country-form" action="/log_country">
-      <label for="start">Add Country</label>
-      <input type="text" id="start" placeholder="<Country Name or Code>" name="country">
-      <button type="submit">Submit</button>
+      <div class="country-input-row">
+        <label for="start">Add Country</label>
+        <div class="country-autocomplete">
+          <input type="text" id="start" placeholder="<Country Name or Code>" name="country" autocomplete="off">
+          <div id="country-suggestions" class="country-suggestions"></div>
+        </div>
+        <button type="submit">Submit</button>
+        <button type="button" id="undo-country-btn" class="undo-country-btn" style="display:none;"></button>
+      </div>
+      <label class="flown-through-label" for="flown-through-check">
+        <input type="checkbox" id="flown-through-check" name="flown_through" value="true">
+        Flown through (not visited)
+      </label>
+      <div class="country-form-footer">
+        <span id="country-form-message" class="country-form-message"></span>
+      </div>
     </form>
   </div>
+  {% endif %}
+
+  <!-- Title: one clean text line -->
+  <div class="title-bar">
+    <h1>{{title}} {{stat_string}}<span id="displayedCount"></span></h1>
+  </div>
+
+  <!-- Year slider: "Up to" (cumulative, visited by year X) or "Only"
+       (visited in exactly year X) -- see applyYearFilter below. -->
+  {% if mapbox_bounds_json %}
+  <div class="year-slider-bar">
+    <div class="year-mode-toggle" id="yearModeToggle">
+      <button type="button" class="year-mode-btn active" data-mode="cumulative">Up to</button>
+      <button type="button" class="year-mode-btn" data-mode="only">Only</button>
+    </div>
+    <span class="year-slider-value" id="yearSliderValue">&nbsp;</span>
+    <input type="range" id="yearSlider" step="1">
+  </div>
+  {% endif %}
 
   <!-- Plotly chart -->
-  <div class="content-wrapper">
-    <div id="chart"></div>
+  <div id="chart"></div>
 
-    <!-- Table -->
-    <div class="table-container">
-      {{ more_html|safe }}
-    </div>
+  <!-- Table -->
+  {% if more_html %}
+  <div class="table-container">
+    {{ more_html|safe }}
   </div>
+  {% endif %}
+
+  <!-- Add Country autocomplete: filters the full country list
+       client-side as you type, matching name or either ISO code.
+       Independent of the map/graph JS below -- present on every page,
+       since .country-bar is in the shared top nav. -->
+  <script type='text/javascript'>
+    (function() {
+      var countryList = {{ country_list_json | safe }};
+      var input = document.getElementById('start');
+      var suggestionsBox = document.getElementById('country-suggestions');
+      if (!input || !suggestionsBox) return;
+
+      var MAX_SUGGESTIONS = 8;
+
+      function filterCountries(query) {
+        var q = query.trim().toLowerCase();
+        if (!q) return [];
+
+        var startsWith = [];
+        var contains = [];
+        countryList.forEach(function(c) {
+          var name = c.name.toLowerCase();
+          var iso2 = (c.iso_2 || '').toLowerCase();
+          var iso3 = (c.iso_3 || '').toLowerCase();
+          if (name.indexOf(q) === -1 && iso2.indexOf(q) === -1 && iso3.indexOf(q) === -1) return;
+          if (name.indexOf(q) === 0 || iso2 === q || iso3 === q) {
+            startsWith.push(c);
+          } else {
+            contains.push(c);
+          }
+        });
+        startsWith.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        contains.sort(function(a, b) { return a.name.localeCompare(b.name); });
+        return startsWith.concat(contains).slice(0, MAX_SUGGESTIONS);
+      }
+
+      function closeSuggestions() {
+        suggestionsBox.classList.remove('open');
+        suggestionsBox.innerHTML = '';
+      }
+
+      function renderSuggestions(matches) {
+        suggestionsBox.innerHTML = '';
+        matches.forEach(function(c) {
+          var item = document.createElement('div');
+          item.className = 'country-suggestion-item';
+          item.textContent = c.name;
+          var code = document.createElement('span');
+          code.className = 'country-suggestion-code';
+          code.textContent = c.iso_3;
+          item.appendChild(code);
+          // mousedown, not click -- fires before the input's blur, so
+          // the value is set before the blur handler closes the list.
+          item.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            input.value = c.name;
+            closeSuggestions();
+          });
+          suggestionsBox.appendChild(item);
+        });
+        suggestionsBox.classList.toggle('open', matches.length > 0);
+      }
+
+      input.addEventListener('input', function() {
+        renderSuggestions(filterCountries(input.value));
+      });
+
+      input.addEventListener('focus', function() {
+        if (input.value.trim()) renderSuggestions(filterCountries(input.value));
+      });
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeSuggestions();
+      });
+
+      input.addEventListener('blur', function() {
+        setTimeout(closeSuggestions, 150);
+      });
+    })();
+  </script>
 
   <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
   <script type='text/javascript'>
     var graphs = {{graphJSON | safe}};
-    var layout = {
-      title: 'Responsive to window\'s size!',
-      font: {size: 18},
-    };
-    var config = {responsive: true};
-    Plotly.newPlot('chart', graphs, layout, config);
+    var config = {responsive: true, displaylogo: false, scrollZoom: true, displayModeBar: false};
+    var plotReady = Plotly.newPlot('chart', graphs.data, graphs.layout, config);
+
+    {% if mapbox_bounds_json %}
+    // The zoom baked into the figure server-side is only a guess
+    // (the server doesn't know the visitor's actual screen size) --
+    // refit each mapbox subplot's zoom against its real rendered
+    // pixel size once the page knows it.
+    (function() {
+      var mapBounds = {{ mapbox_bounds_json | safe }};
+
+      function mercatorY(latDeg) {
+        var latRad = Math.max(Math.min(latDeg, 85.05), -85.05) * Math.PI / 180;
+        return Math.log(Math.tan(Math.PI / 4 + latRad / 2));
+      }
+
+      function fitZoom(bounds, boxWidthPx, boxHeightPx, padding) {
+        padding = padding || 0.85;
+        var lonSpan = bounds[2] - bounds[0];
+        var ySpan = mercatorY(bounds[3]) - mercatorY(bounds[1]);
+        var zoomX = Math.log2((boxWidthPx * padding * 360) / (lonSpan * 256));
+        var zoomY = Math.log2((boxHeightPx * padding * 2 * Math.PI) / (ySpan * 256));
+        return Math.min(zoomX, zoomY);
+      }
+
+      function refitMaps() {
+        var chartDiv = document.getElementById('chart');
+        var chartW = chartDiv.clientWidth;
+        var chartH = chartDiv.clientHeight;
+
+        // Plotly.relayout doesn't reliably resize a mapbox subplot's
+        // underlying map canvas when its domain changes after the
+        // initial draw (zoom-only changes are fine with relayout;
+        // domain changes are not) -- Plotly.react with a full new
+        // layout is the documented way to handle that kind of
+        // structural change.
+        var newLayout = JSON.parse(JSON.stringify(graphs.layout));
+
+        // Continental map: left at its server-set zoom (3) and full
+        // domain -- it's not being fit to a bounding box, so there's
+        // nothing to correct here.
+
+        // AK/HI insets: equal-size square boxes, sized as a
+        // percentage of the smaller viewport dimension so they scale
+        // up on a bigger desktop window instead of staying phone-sized
+        // (a domain of equal x/y *fractions* would not itself be
+        // square unless the viewport is square). Once the box is a
+        // known square, the same fitZoom used above just works -- it
+        // already picks whichever axis (lon or lat) is the tighter
+        // constraint. A looser padding (more margin) than the
+        // continental map's default, since a snug fit was clipping
+        // Hawaii's Big Island / Alaska's North Slope.
+        var squarePx = Math.min(chartW, chartH) * 0.20;
+        var marginPx = squarePx * 0.08;
+        var insets = [
+          {key: 'mapbox2', bounds: mapBounds.mapbox2, x0: marginPx},
+          {key: 'mapbox3', bounds: mapBounds.mapbox3, x0: marginPx * 2 + squarePx},
+        ];
+        insets.forEach(function(inset) {
+          if (!inset.bounds || !newLayout[inset.key]) return;
+          var x0 = inset.x0, x1 = inset.x0 + squarePx;
+          var y0 = marginPx, y1 = marginPx + squarePx;
+          newLayout[inset.key].domain = {x: [x0 / chartW, x1 / chartW], y: [y0 / chartH, y1 / chartH]};
+          newLayout[inset.key].zoom = fitZoom(inset.bounds, squarePx, squarePx, 0.45);
+        });
+
+        return Plotly.react('chart', graphs.data, newLayout, config);
+      }
+
+      // Serialize every refit through one promise chain -- calling
+      // Plotly.react again on the same mapbox subplots before a prior
+      // call has finished can corrupt their rendering (this is likely
+      // what made the insets vanish on mobile: the browser fires a
+      // resize event almost immediately after load as the address bar
+      // collapses, which was racing with the initial refit).
+      var refitChain = Promise.resolve();
+      function scheduleRefit() {
+        refitChain = refitChain.then(refitMaps).catch(function(err) {
+          console.error('refitMaps failed:', err);
+        });
+      }
+
+      // Plotly.newPlot returns a promise that resolves once the plot
+      // (including loading the mapbox tile styles) is actually ready;
+      // calling react()/relayout() before that resolves can silently
+      // no-op for mapbox subplots.
+      plotReady.then(scheduleRefit).catch(function(err) {
+        console.error('initial plot failed:', err);
+      });
+
+      // Debounced: mobile viewport-height changes (address bar
+      // show/hide) can fire several resize events in quick succession.
+      var resizeTimer = null;
+      window.addEventListener('resize', function() {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(scheduleRefit, 250);
+      });
+
+      // Year slider: two modes, switched by the Up-to/Only segmented
+      // control (#yearModeToggle). "cumulative" (default) shows every
+      // county/state first-visited on or before the slider year -- the
+      // show/hide test consults mapBounds.firstVisitYear (the *first*
+      // visit year, from the full county_visits/state history), so an
+      // entity visited in both 2015 and 2022 correctly shows from 2015
+      // onward, not just 2022. "only" shows exclusively entities
+      // actually visited in that exact year (mapBounds.visitedYears,
+      // the full per-entity year list), all rendered at one flat z (the
+      // cutoff year itself) -- deliberately flat, since a gradient
+      // encodes "how long ago", which isn't meaningful once already
+      // filtered to one exact year. Both modes recolor entirely
+      // client-side -- no server round-trip.
+      //
+      // coloraxis.cmax is rescaled to the slider's own cutoff on every
+      // move (cmin stays fixed at the true global floor) rather than
+      // left at whatever the page loaded with -- without this, the
+      // gradient's top end stays pinned to the *global* most-recent
+      // year (2026 right now) even while looking at, say, 2018, so most
+      // of the color range is wasted on years past the current cutoff
+      // and everything visible gets compressed into a narrow band.
+      // Rescaling to the cutoff means the fullest/darkest color always
+      // means "as recent as what you're currently looking at" --
+      // including in "only" mode, where every match then renders at the
+      // single darkest shade (all sharing z==cutoff==cmax) rather than
+      // whatever arbitrary position that year happens to sit at on a
+      // scale that still reserves room up to 2026.
+      var slider = document.getElementById('yearSlider');
+      var sliderValueLabel = document.getElementById('yearSliderValue');
+      var modeButtons = document.querySelectorAll('.year-mode-btn');
+      var displayedCountEl = document.getElementById('displayedCount');
+
+      if (slider && mapBounds.yearRange) {
+        var YEAR_BASE = 2000;   // matches location_db.get_county_visits_dataframe()
+        var UNVISITED_Z = -1;
+        var yearMin = mapBounds.yearRange[0];
+        var yearMax = mapBounds.yearRange[1];
+        // Empty for a county/state not yet in the ledger (pre-backfill
+        // transitional state) -- falls back to v itself below.
+        var firstVisitYear = mapBounds.firstVisitYear || {};
+        var visitedYears = mapBounds.visitedYears || {};
+        var currentMode = 'cumulative';
+
+        slider.min = yearMin;
+        slider.max = yearMax;
+        slider.value = yearMax;
+
+        // Snapshot the true, unfiltered year for each trace so every
+        // slider move recomputes from the original data rather than
+        // compounding on top of a previous filter.
+        var originalZ = graphs.data.map(function(trace) {
+          return trace.z ? trace.z.slice() : null;
+        });
+
+        function applyYearFilter() {
+          var cutoff = parseInt(slider.value, 10);
+          var cutoffOffset = cutoff - YEAR_BASE;
+
+          var traceIndices = [];
+          var newZ = [];
+          originalZ.forEach(function(z, idx) {
+            if (!z) return;
+            var locs = graphs.data[idx].locations || [];
+            traceIndices.push(idx);
+            newZ.push(z.map(function(v, i) {
+              var fips = locs[i];
+              if (currentMode === 'only') {
+                var years = visitedYears.hasOwnProperty(fips) ? visitedYears[fips] : [];
+                return years.indexOf(cutoffOffset) !== -1 ? cutoffOffset : UNVISITED_Z;
+              }
+              var firstYear = firstVisitYear.hasOwnProperty(fips) ? firstVisitYear[fips] : v;
+              return (v > UNVISITED_Z && firstYear > cutoffOffset) ? UNVISITED_Z : v;
+            }));
+          });
+
+          sliderValueLabel.textContent = (currentMode === 'only' ? 'Only ' : 'Through ') + cutoff;
+
+          // Count against trace 0 (the main map) specifically, not a sum
+          // across all traces -- the AK/HI inset traces redraw a subset
+          // of the *same* counties/states shown on the main map (see
+          // main_df/ak_df/hi_df server-side), so summing every trace
+          // would double-count them.
+          var mainPos = traceIndices.indexOf(0);
+          if (displayedCountEl && mainPos !== -1) {
+            var displayedCount = newZ[mainPos].filter(function(v) { return v > UNVISITED_Z; }).length;
+            displayedCountEl.textContent = ' (' + displayedCount.toLocaleString() + ' visited ' +
+              (currentMode === 'only' ? 'only in ' : 'up to ') + cutoff + ')';
+          }
+
+          // cmin deliberately stays UNVISITED_Z, not yearMin -- pinning it
+          // to the exact ledger floor put whichever county holds that
+          // floor exactly at position 0 of the gradient on every single
+          // reachable cutoff, which maps to colorscale_county's special
+          // pale override color (meant for "barely more recent than
+          // nothing"), not a true value -- a real find from testing:
+          // the county that defines the floor is exactly the one this
+          // made hardest to see. UNVISITED_Z leaves genuine headroom
+          // below every real year, however far back it goes.
+          Plotly.update('chart', {z: newZ}, {'coloraxis.cmin': UNVISITED_Z, 'coloraxis.cmax': cutoffOffset}, traceIndices);
+        }
+
+        slider.addEventListener('input', applyYearFilter);
+
+        modeButtons.forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            if (btn.classList.contains('active')) return;
+            modeButtons.forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            currentMode = btn.dataset.mode;
+            applyYearFilter();
+          });
+        });
+
+        // Initial paint: sets the label, banner count, and coloraxis
+        // range for the default (cumulative, cutoff = yearMax) state --
+        // one code path for this instead of duplicating slightly
+        // different setup logic inline.
+        applyYearFilter();
+      }
+
+      // County hover: replace the Plotly-default (raw FIPS + internal
+      // offset year) with the county name and its full visited-years
+      // list, e.g. "Greene County, OH -- 2015, 2018-2022". Restyled once
+      // on load, not baked into the server-cached figure, for the same
+      // staleness reason firstVisitYear above is computed fresh per
+      // request rather than cached -- see serve_county_graph.
+      var countyHoverText = mapBounds.countyHoverText;
+      if (countyHoverText) {
+        var hoverTraceIndices = [];
+        var customdataUpdate = [];
+        graphs.data.forEach(function(trace, idx) {
+          if (!trace.locations) return;
+          hoverTraceIndices.push(idx);
+          customdataUpdate.push(trace.locations.map(function(fips) {
+            return countyHoverText[fips] || '';
+          }));
+        });
+        Plotly.restyle('chart', {customdata: customdataUpdate, hovertemplate: '%{customdata}<extra></extra>'}, hoverTraceIndices);
+      }
+    })();
+    {% endif %}
+
+    // Micro-country markers (see the /countries route -- currently
+    // just Vatican): a fixed pixel size looks fine zoomed in close,
+    // but the same size dwarfs a whole country like Italy at
+    // world-view zoom. Scale it against the map's current zoom
+    // instead of a constant. Not page-gated by a template flag --
+    // just detects whether this figure has a scattermapbox trace at
+    // all, so it's a no-op on every other page.
+    (function() {
+      var starTraceIndex = graphs.data.findIndex(function(t) { return t.type === 'scattermapbox'; });
+      if (starTraceIndex === -1) return;
+
+      var chartDiv = document.getElementById('chart');
+      var MIN_ZOOM = 2, MAX_ZOOM = 10;
+      var MIN_SIZE = 5, MAX_SIZE = 30;
+
+      function sizeForZoom(zoom) {
+        var t = Math.max(0, Math.min(1, (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)));
+        return MIN_SIZE + t * (MAX_SIZE - MIN_SIZE);
+      }
+
+      function updateStarSize() {
+        // Re-read the map's current zoom from the chart's own layout
+        // rather than the relayout event payload -- simpler than
+        // depending on exactly which keys a given interaction (pan
+        // vs. zoom vs. pinch) happens to include, and it's always
+        // kept in sync by Plotly after any relayout regardless.
+        var zoom = chartDiv.layout.mapbox.zoom;
+        Plotly.restyle('chart', {'marker.size': [sizeForZoom(zoom)]}, [starTraceIndex]);
+      }
+
+      plotReady.then(function() {
+        updateStarSize();
+        chartDiv.on('plotly_relayout', updateStarSize);
+      }).catch(function(err) {
+        console.error('star zoom-scaling setup failed:', err);
+      });
+    })();
+
+    // Add Country: submit via fetch() instead of a normal browser
+    // navigation, so success/failure shows up as a small inline
+    // message next to the form instead of replacing the whole page
+    // with the raw JSON response. Also drives the Undo button: a
+    // localStorage-backed LIFO stack of {iso_3, name, field} entries,
+    // one per *genuine* change (see the was_already_set check below).
+    // localStorage rather than sessionStorage specifically because it
+    // needs to work across tabs, not just page reloads within one.
+    (function() {
+      var form = document.getElementById('country-form');
+      if (!form) return;
+
+      var input = document.getElementById('start');
+      var messageEl = document.getElementById('country-form-message');
+      var suggestionsBox = document.getElementById('country-suggestions');
+      var undoBtn = document.getElementById('undo-country-btn');
+      var isCountriesPage = window.location.pathname === '/countries';
+      var UNDO_STORAGE_KEY = 'countryUndoStack';
+
+      var messageTimeoutId = null;
+      function showMessage(text, kind) {
+        messageEl.textContent = text;
+        messageEl.className = 'country-form-message ' + kind;
+
+        // Success messages ("Added France.", "Undid France.") are a
+        // disposable confirmation -- the map/card list already show
+        // the real result, so the message itself doesn't need to
+        // stick around. Errors are left alone; those may need
+        // reading/acting on. Clear any previous timer first so a
+        // fast follow-up message (e.g. undo right after an add)
+        // isn't cut off early by the earlier message's timer.
+        if (messageTimeoutId) {
+          clearTimeout(messageTimeoutId);
+          messageTimeoutId = null;
+        }
+        if (kind === 'success') {
+          messageTimeoutId = setTimeout(function() {
+            messageEl.textContent = '';
+            messageEl.className = 'country-form-message';
+            messageTimeoutId = null;
+          }, 5000);
+        }
+      }
+
+      // Storage access can throw (private browsing, disabled storage,
+      // etc.) -- fails safe to an empty stack / a no-op write rather
+      // than breaking the rest of the page.
+      function readUndoStack() {
+        try {
+          return JSON.parse(localStorage.getItem(UNDO_STORAGE_KEY)) || [];
+        } catch (err) {
+          return [];
+        }
+      }
+
+      function writeUndoStack(stack) {
+        try {
+          localStorage.setItem(UNDO_STORAGE_KEY, JSON.stringify(stack));
+        } catch (err) {
+          // Nothing to do -- undo just won't persist this time.
+        }
+      }
+
+      function updateUndoButton() {
+        var stack = readUndoStack();
+        if (stack.length === 0) {
+          undoBtn.style.display = 'none';
+          return;
+        }
+        var top = stack[stack.length - 1];
+        undoBtn.textContent = 'Undo ' + top.name;
+        undoBtn.title = 'Undo ' + top.name;
+        undoBtn.style.display = '';
+      }
+
+      // Re-fetches this same page in the background and swaps in its
+      // freshly-rendered map + card list, rather than recomputing the
+      // new color/opacity/etc. here in JS -- that stays perfectly in
+      // sync with whatever the server would show on a real reload,
+      // since it's the exact same rendering code producing both.
+      // Only worth doing on /countries: it's the only page an added
+      // country could possibly change, and re-fetching a full page
+      // (multiple MB on /counties or /states) just to no-op-refresh
+      // an unrelated map would be pure waste.
+      function refreshCountriesMap() {
+        return fetch(window.location.href, {credentials: 'same-origin'})
+          .then(function(resp) { return resp.text(); })
+          .then(function(html) {
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+
+            var newTableContainer = doc.querySelector('.table-container');
+            var curTableContainer = document.querySelector('.table-container');
+            if (newTableContainer && curTableContainer) {
+              curTableContainer.innerHTML = newTableContainer.innerHTML;
+            }
+
+            var newGraphs = null;
+            doc.querySelectorAll('script').forEach(function(s) {
+              var m = s.textContent.match(/var graphs = (\{[\s\S]*?\});\s*\n\s*var config/);
+              if (m) newGraphs = JSON.parse(m[1]);
+            });
+            if (newGraphs) {
+              return Plotly.react('chart', newGraphs.data, newGraphs.layout, config);
+            }
+          });
+      }
+
+      // Runs map refreshes one at a time rather than however they
+      // happen to be triggered -- calling Plotly.react() again on a
+      // mapbox subplot before a previous call has finished can
+      // corrupt its rendering (the same class of bug the counties/
+      // states insets hit from an overlapping resize; see refitChain
+      // in the mapbox_bounds_json block above). Submitting or undoing
+      // several countries in quick succession is the same risk here.
+      // Callers that don't need to wait for the redraw (the undo
+      // button re-enabling, in particular) should call this without
+      // chaining off its return value.
+      var mapRefreshChain = Promise.resolve();
+      function scheduleMapRefresh() {
+        mapRefreshChain = mapRefreshChain.then(refreshCountriesMap).catch(function(err) {
+          console.error('map refresh failed:', err);
+        });
+        return mapRefreshChain;
+      }
+
+      form.addEventListener('submit', function(event) {
+        event.preventDefault();
+        var typedValue = input.value;
+
+        fetch(form.action, {
+          method: 'POST',
+          body: new FormData(form),
+          credentials: 'same-origin',
+        })
+          .then(function(resp) {
+            return resp.json().then(function(data) {
+              return {ok: resp.ok, data: data};
+            });
+          })
+          .then(function(result) {
+            if (result.ok && result.data.success) {
+              showMessage('Added ' + typedValue + '.', 'success');
+              form.reset();
+              if (suggestionsBox) suggestionsBox.classList.remove('open');
+
+              // Only track it as undoable if this action actually
+              // changed something -- resubmitting a country that was
+              // already set (e.g. an accidental double-click) has
+              // nothing from *this* action to undo, and blindly
+              // clearing the flag later could erase a fact that was
+              // true from a completely different, untracked action.
+              if (!result.data.was_already_set) {
+                var stack = readUndoStack();
+                stack.push({iso_3: result.data.iso_3, name: result.data.name, field: result.data.field});
+                writeUndoStack(stack);
+                updateUndoButton();
+              }
+
+              if (isCountriesPage) {
+                scheduleMapRefresh();
+              }
+            } else {
+              showMessage((result.data && result.data.error) || 'Something went wrong.', 'error');
+            }
+          })
+          .catch(function(err) {
+            console.error('country submit failed:', err);
+            showMessage('Network error -- try again.', 'error');
+          });
+      });
+
+      undoBtn.addEventListener('click', function() {
+        var stack = readUndoStack();
+        if (stack.length === 0) return;
+
+        var entry = stack.pop();
+        // Persist the pop immediately (not after the fetch resolves)
+        // so a rapid second click can't read and act on the same
+        // top-of-stack entry twice; disabling the button covers the
+        // same race for clicks on this exact button/tab, but not a
+        // second click landing in a different tab mid-request.
+        writeUndoStack(stack);
+        undoBtn.disabled = true;
+
+        fetch('/undo_country', {
+          method: 'POST',
+          body: new URLSearchParams({country: entry.iso_3, field: entry.field}),
+          credentials: 'same-origin',
+        })
+          .then(function(resp) {
+            return resp.json().then(function(data) {
+              return {ok: resp.ok, data: data};
+            });
+          })
+          .then(function(result) {
+            if (result.ok && result.data.success) {
+              showMessage('Undid ' + entry.name + '.', 'success');
+              // Not returned/chained -- the button below shouldn't
+              // have to wait for the (slower) redraw before the next
+              // undo click is allowed, only for the actual undo
+              // request, which has already finished by this point.
+              // scheduleMapRefresh still serializes it against any
+              // other pending refresh, so this doesn't reopen the
+              // overlapping-Plotly.react() risk noted above.
+              if (isCountriesPage) {
+                scheduleMapRefresh();
+              }
+            } else {
+              // Didn't apply -- put it back so the user can retry.
+              stack.push(entry);
+              writeUndoStack(stack);
+              showMessage((result.data && result.data.error) || 'Undo failed.', 'error');
+            }
+          })
+          .catch(function(err) {
+            console.error('undo failed:', err);
+            stack.push(entry);
+            writeUndoStack(stack);
+            showMessage('Network error -- try again.', 'error');
+          })
+          .then(function() {
+            undoBtn.disabled = false;
+            updateUndoButton();
+          });
+      });
+
+      updateUndoButton();
+    })();
   </script>
 </body>
 </html>
-

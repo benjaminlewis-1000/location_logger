@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/example.css') }}">
+  <title>{{page_title}}</title>
+  <style>
+    html, body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #fff;
+    }
+
+    .top-bar {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 0.4rem;
+      background: #fff;
+      padding: 0.4rem 0.5rem;
+      box-sizing: border-box;
+    }
+
+    .top-bar .btn,
+    .top-bar .logout-btn {
+      position: static;
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto;
+      margin: 0;
+      padding: 8px 4px;
+      font-size: 0.8rem;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+
+    .engineering-content {
+      max-width: 640px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+
+    .progress-block {
+      margin-bottom: 2.5rem;
+    }
+
+    .progress-block h2 {
+      font-size: 1.1rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 28px;
+      background: #eee;
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: #32D172;
+      width: 0%;
+      transition: width 0.4s ease;
+    }
+
+    .progress-fill.backfill {
+      background: #5B84B1;
+    }
+
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      color: #555;
+      margin-top: 0.35rem;
+    }
+
+    .progress-pct {
+      font-weight: bold;
+      font-size: 1rem;
+      color: #222;
+    }
+
+    .stale-note {
+      font-size: 0.75rem;
+      color: #999;
+      text-align: center;
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <a class='btn' href="counties">Counties</a>
+    <a class='btn' href="states">States</a>
+    <a class='btn' href="countries">Countries</a>
+    <a class='btn' href="/">Map</a>
+    <a href="/logout" class="logout-btn">Logout</a>
+  </div>
+
+  <div class="engineering-content">
+    <div class="progress-block">
+      <h2>Ongoing county processing</h2>
+      <div class="progress-track">
+        <div class="progress-fill" id="ongoing-fill" style="width: {{ ongoing_pct }}%;"></div>
+      </div>
+      <div class="progress-label">
+        <span id="ongoing-count">{{ ongoing_done }} / {{ total }}</span>
+        <span class="progress-pct" id="ongoing-pct">{{ '%.1f' | format(ongoing_pct) }}%</span>
+      </div>
+    </div>
+
+    <div class="progress-block">
+      <h2>Historical backfill (county_visit_years)</h2>
+      <div class="progress-track">
+        <div class="progress-fill backfill" id="backfill-fill" style="width: {{ backfill_pct }}%;"></div>
+      </div>
+      <div class="progress-label">
+        <span id="backfill-count">{{ backfill_done }} / {{ total }}</span>
+        <span class="progress-pct" id="backfill-pct">{{ '%.1f' | format(backfill_pct) }}%</span>
+      </div>
+    </div>
+
+    <div class="stale-note" id="last-updated">Updated just now</div>
+  </div>
+
+  <script>
+    (function() {
+      function fmtInt(n) {
+        return n.toLocaleString();
+      }
+
+      function applyProgress(prefix, done, total, pct) {
+        document.getElementById(prefix + '-fill').style.width = pct + '%';
+        document.getElementById(prefix + '-count').textContent = fmtInt(done) + ' / ' + fmtInt(total);
+        document.getElementById(prefix + '-pct').textContent = pct.toFixed(1) + '%';
+      }
+
+      function poll() {
+        fetch('/engineering_status', {credentials: 'same-origin'})
+          .then(function(resp) { return resp.json(); })
+          .then(function(data) {
+            applyProgress('ongoing', data.ongoing_done, data.total, data.ongoing_pct);
+            applyProgress('backfill', data.backfill_done, data.total, data.backfill_pct);
+            document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+          })
+          .catch(function(err) {
+            console.error('engineering status poll failed:', err);
+            document.getElementById('last-updated').textContent = 'Update failed -- retrying...';
+          });
+      }
+
+      setInterval(poll, 5000);
+    })();
+  </script>
+</body>
+</html>

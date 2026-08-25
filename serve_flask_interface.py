@@ -14,7 +14,9 @@ from urllib.request import urlopen
 from functools import wraps
 import config
 import requests
+import colorsys
 import geopandas as gpd
+import hashlib
 import json
 import jsonpickle
 import location_db
@@ -24,6 +26,9 @@ import os
 import pandas as pd
 import plotly
 import plotly.express as px
+import plotly.graph_objects as go
+from shapely.geometry import mapping, shape
+from shapely.ops import transform as shapely_transform
 import re
 import requests
 import time
@@ -98,12 +103,92 @@ def authelia_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
+def _wrap_lon(lon):
+    # Normalize to [-180, 180). Needed because Alaska's Aleutian
+    # Islands cross the antimeridian -- some are recorded as ~-179
+    # and others as ~+179, which are geographically adjacent but
+    # numerically far apart unless unwrapped/rewrapped consistently.
+    return ((lon + 180) % 360) - 180
+
+def _mercator_y(lat_deg):
+    lat_rad = math.radians(max(min(lat_deg, 85.05), -85.05))
+    return math.log(math.tan(math.pi / 4 + lat_rad / 2))
+
+def _mercator_center_lat(min_lat, max_lat):
+    # The visual midpoint of a lat range under Mercator is not the
+    # simple degree average -- Mercator stretches increasingly toward
+    # the poles, so a naive average sits off-center (biased toward the
+    # equator relative to how the range actually renders). Matters
+    # most at high latitudes, e.g. Alaska's ~54-71N span.
+    y_mid = (_mercator_y(min_lat) + _mercator_y(max_lat)) / 2
+    return math.degrees(2 * math.atan(math.exp(y_mid)) - math.pi / 2)
+
+def _fit_zoom(bounds, box_width_px, box_height_px, padding=0.85):
+    # Zoom level such that a lon/lat bounding box fits within a given
+    # pixel-size box, accounting for the Mercator projection's
+    # latitude-dependent vertical scale (a naive degrees-of-latitude
+    # calculation would be wrong -- Mercator stretches vertically near
+    # the poles). box_width_px/box_height_px are necessarily a fixed
+    # assumption of the actual rendered container size, since that
+    # isn't known server-side; tuned for a typical desktop window.
+    min_lon, min_lat, max_lon, max_lat = bounds
+    lon_span = max_lon - min_lon
+    y_span = _mercator_y(max_lat) - _mercator_y(min_lat)
+    zoom_x = math.log2((box_width_px * padding * 360) / (lon_span * 256))
+    zoom_y = math.log2((box_height_px * padding * 2 * math.pi) / (y_span * 256))
+    return min(zoom_x, zoom_y)
+
+def _pad_bounds(bounds, pad_degrees):
+    min_lon, min_lat, max_lon, max_lat = bounds
+    return dict(
+            west=_wrap_lon(min_lon - pad_degrees),
+            east=_wrap_lon(max_lon + pad_degrees),
+            south=max(min_lat - pad_degrees, -85.0),
+            north=min(max_lat + pad_degrees, 85.0),
+        )
+
+def _country_color(code):
+    # A distinct color per visited country instead of one shared
+    # "visited" color, so neighboring visited countries don't blend
+    # into one blob. Deliberately not doing real four-color-theorem
+    # map coloring (needs adjacency data + a constraint solver) -- just
+    # a hash-seeded hue per country, so two neighbors can in principle
+    # land on similar colors. Hash (not the stdlib `random` module) so
+    # each country's color is stable across requests/reloads rather
+    # than reshuffling every page load; fixed saturation/lightness so
+    # every color comes out equally vivid and legible regardless of
+    # which hue a given country happens to land on.
+    seed = int(hashlib.md5(code.encode()).hexdigest(), 16)
+    hue = (seed % 360) / 360.0
+    r, g, b = colorsys.hls_to_rgb(hue, 0.50, 0.65)
+    return '#{:02x}{:02x}{:02x}'.format(round(r * 255), round(g * 255), round(b * 255))
+
+def _format_year_ranges(years):
+    # [2015, 2018, 2019, 2020, 2021, 2022, 2024, 2025, 2026] ->
+    # "2015, 2018-2022, 2024-2026" -- any run of 2+ consecutive years
+    # collapses to a range.
+    years = sorted(set(years))
+    if not years:
+        return ''
+    ranges = []
+    start = prev = years[0]
+    for y in years[1:]:
+        if y == prev + 1:
+            prev = y
+            continue
+        ranges.append(f'{start}-{prev}' if start != prev else f'{start}')
+        start = prev = y
+    ranges.append(f'{start}-{prev}' if start != prev else f'{start}')
+    return ', '.join(ranges)
+
 load_dotenv()
 
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
 # SESSION_TYPE = 'redis'
 app.config.from_object(__name__)
 app.config['CORS_HEADERS'] = 'Content-Type'
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 gmap_key = os.environ['GMAP_API_KEY']
 app.config['GOOGLEMAPS_KEY'] = gmap_key
 app.config['UPLOAD_FOLDER'] = "/data"
@@ -124,10 +209,73 @@ class FlaskApp(FlaskView):
         for cc in range(len(cls.counties['features'])):
             cls.counties['features'][cc]['properties']['GEO_ID'] = re.sub(r'0500000US', '', cls.counties['features'][cc]['properties']['GEO_ID'])
 
+        # World country outlines for the /countries choropleth, id'd by
+        # ISO alpha-3 code (matches location_db's countries.code_3) --
+        # see config.world_country_json for provenance.
+        with open(config.world_country_json, 'rb') as geodata:
+            cls.world_countries_geojson = json.load(geodata)
+
+        # Precompute lon/lat bounds for the Alaska/Hawaii inset maps,
+        # so their default center/zoom and pan limits are derived from
+        # the actual geography instead of guessed constants.
+        counties_gdf = gpd.GeoDataFrame.from_features(cls.counties['features'])
+        ak_gdf = counties_gdf[counties_gdf['GEO_ID'].str.startswith('02')].copy()
+        # Unwrap the Aleutians across the antimeridian (see _wrap_lon)
+        # before taking bounds, or the islands on either side of 180
+        # longitude make Alaska look like it spans the whole globe.
+        ak_gdf['geometry'] = ak_gdf['geometry'].apply(
+                lambda geom: shapely_transform(lambda x, y: (x - 360 if x > 0 else x, y), geom))
+        # Aleutians West alone drags the bounds out to -187 (every
+        # other AK county stays within -173 to -141) -- excluded here
+        # so the inset's default zoom/pan fits the bulk of the state
+        # instead of being dominated by one remote, thinly-populated
+        # census area. It still renders normally on the map itself,
+        # just outside this inset's default pan range.
+        ak_fit_gdf = ak_gdf[ak_gdf['NAME'] != 'Aleutians West']
+        cls.ak_bounds = tuple(ak_fit_gdf.total_bounds)
+        cls.hi_bounds = tuple(counties_gdf[counties_gdf['GEO_ID'].str.startswith('15')].total_bounds)
+        # 02/15 = AK/HI (their own insets); 72/78/66/60/69 = Puerto
+        # Rico/Virgin Islands/Guam/American Samoa/Northern Mariana --
+        # present in the county data and otherwise drags the "fit the
+        # continental US" bounds far south/east.
+        non_conti_fips = ['02', '15', '72', '78', '66', '60', '69']
+        is_conti = ~counties_gdf['GEO_ID'].str[:2].isin(non_conti_fips)
+        cls.conti_bounds = tuple(counties_gdf[is_conti].total_bounds)
+
         cls.database = location_db.locationDB(db_name=config.database_location, \
                                     fips_file = config.county_fips_file, \
                                     country_file=config.country_file)
 
+        # State-level outlines for the /states choropleth: dissolve the
+        # county polygons already loaded above up to state boundaries,
+        # rather than sourcing a whole separate states GeoJSON -- we
+        # already have every county's geometry and know its state.
+        county_state_lookup = cls.database.get_county_visits_dataframe()
+        fips_to_state = dict(zip(county_state_lookup['FIPS'], county_state_lookup['state']))
+        states_gdf = counties_gdf.copy()
+        states_gdf['state_abbrev'] = states_gdf['GEO_ID'].map(fips_to_state)
+        states_gdf = states_gdf.dropna(subset=['state_abbrev'])
+        states_gdf = states_gdf.dissolve(by='state_abbrev').reset_index()
+        cls.states_geojson = {
+                'type': 'FeatureCollection',
+                'features': [
+                        {
+                            'type': 'Feature',
+                            'id': row['state_abbrev'],
+                            'properties': {'name': config.abbrev_to_us_state.get(row['state_abbrev'], row['state_abbrev'])},
+                            'geometry': mapping(row['geometry']),
+                        }
+                        for _, row in states_gdf.iterrows()
+                    ],
+            }
+
+        # Name/code list for the Add Country autocomplete (see
+        # inject_country_list() below) -- name/codes are static once
+        # seeded, so this is computed once here rather than re-queried
+        # on every page load.
+        all_countries_df = cls.database.get_all_countries_dataframe()
+        cls.country_list_json = json.dumps(
+                all_countries_df[['name', 'iso_2', 'iso_3']].to_dict('records'))
 
         cls.colorscale = plotly.colors.sequential.Viridis
         #n_colors = 40
@@ -161,12 +309,72 @@ class FlaskApp(FlaskView):
                         pad=4,
                         autoexpand=True
                     ),
-                    width=1600,
-                    height=800,
             )
 
+        # Plotly allocates the geo subplot a fixed-size rectangle
+        # ("domain") within the figure that doesn't necessarily fill
+        # the whole container -- panning/zooming moves the map inside
+        # that rectangle rather than growing the rectangle itself,
+        # which is what made the map look boxed-in even once the
+        # surrounding CSS was full-bleed. Force it to the full figure.
+        fig.update_geos(domain=dict(x=[0, 1], y=[0, 1]))
 
         return fig
+
+    def __mapbox_layout_base(self):
+        # Continental + Alaska/Hawaii mapbox subplot layout, shared by
+        # /counties and /states -- both need the same "Alaska is far
+        # away" inset treatment (mapbox has no native inset projection
+        # the way scope="usa" geo traces do), fit to Alaska/Hawaii's
+        # true geographic bounds (computed once in _initilization).
+        # Purely geometric -- independent of whatever data (counties'
+        # or states' visited/year) ends up colored on top.
+        ref_chart_px = (1400, 800)
+        ak_domain = dict(x=[0.01, 0.28], y=[0.02, 0.42])
+        hi_domain = dict(x=[0.31, 0.50], y=[0.02, 0.24])
+
+        ak_box_px = (ref_chart_px[0] * (ak_domain['x'][1] - ak_domain['x'][0]),
+                     ref_chart_px[1] * (ak_domain['y'][1] - ak_domain['y'][0]))
+        hi_box_px = (ref_chart_px[0] * (hi_domain['x'][1] - hi_domain['x'][0]),
+                     ref_chart_px[1] * (hi_domain['y'][1] - hi_domain['y'][0]))
+
+        ak_zoom = _fit_zoom(self.ak_bounds, *ak_box_px)
+        hi_zoom = _fit_zoom(self.hi_bounds, *hi_box_px)
+        ak_center = dict(lon=(self.ak_bounds[0] + self.ak_bounds[2]) / 2,
+                          lat=_mercator_center_lat(self.ak_bounds[1], self.ak_bounds[3]))
+        hi_center = dict(lon=(self.hi_bounds[0] + self.hi_bounds[2]) / 2,
+                          lat=_mercator_center_lat(self.hi_bounds[1], self.hi_bounds[3]))
+
+        # Limit how far each inset can be panned/zoomed out to roughly
+        # a few degrees past the state's real boundary, rather than
+        # letting a small inset pan off into empty ocean.
+        ak_pan_bounds = _pad_bounds(self.ak_bounds, pad_degrees=3)
+        hi_pan_bounds = _pad_bounds(self.hi_bounds, pad_degrees=3)
+
+        return dict(
+                mapbox=dict(
+                        style='carto-positron',
+                        center=dict(lat=39.5, lon=-98.35),
+                        zoom=3.3,
+                        domain=dict(x=[0, 1], y=[0, 1]),
+                    ),
+                # Small insets in the bottom-left corner, same spot
+                # the usual USA-map convention places them.
+                mapbox2=dict(
+                        style='carto-positron',
+                        center=ak_center,
+                        zoom=ak_zoom,
+                        domain=ak_domain,
+                        bounds=ak_pan_bounds,
+                    ),
+                mapbox3=dict(
+                        style='carto-positron',
+                        center=hi_center,
+                        zoom=hi_zoom,
+                        domain=hi_domain,
+                        bounds=hi_pan_bounds,
+                    ),
+            )
 
     def __precompute_graph(self):
 
@@ -179,11 +387,78 @@ class FlaskApp(FlaskView):
         self.avg_county_year = self.database.get_average_visit_year()
         self.num_counties_visited = int(county_df.visited.sum())
 
-        fig = px.choropleth(county_df, geojson=self.counties, locations="FIPS",  color='year',
-                                   color_continuous_scale=self.colorscale_county,
-                                   # range_color=(dmin, dmax),
-                                   scope="usa"
-                                  )
+        # year_min/year_max moved out of this cached computation --
+        # see serve_county_graph, computed fresh every request now, for
+        # the same staleness reason firstVisitYear/countyHoverText
+        # already are: a historical-points commit (or any other run
+        # that only writes to county_visits without touching
+        # counties.visited/year) doesn't change num_visited or
+        # avg_county_year, so it would never trigger a recompute here --
+        # the slider's floor could stay wrong indefinitely after adding
+        # an earlier year, not just briefly.
+
+        # Three separate mapbox subplots (continental US, plus small
+        # Alaska/Hawaii insets) instead of a single geo/choropleth
+        # trace. A geo trace with scope="usa" is a static, fixed-aspect
+        # SVG projection -- it always letterboxes inside a container
+        # whose shape doesn't match, and panning/zooming only moves
+        # content within that same fixed-size canvas, which is what
+        # made the map look "stuck in a box" no matter how far zoomed.
+        # A mapbox trace is a real pannable/zoomable tile map that
+        # fills its domain at any aspect ratio -- but mapbox has no
+        # native inset concept the way scope="usa"'s Albers projection
+        # does, so Alaska/Hawaii also get their own small subplots for
+        # an always-visible view, in addition to (not instead of)
+        # rendering at their true, far-away location on the main map --
+        # the main map is a real geographic view now, so panning/
+        # zooming out to actually reach them should show them colored,
+        # not a blank basemap.
+        main_df = county_df
+        ak_df = county_df[county_df['state'] == 'AK']
+        hi_df = county_df[county_df['state'] == 'HI']
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=main_df['FIPS'], z=main_df['year'],
+                coloraxis='coloraxis', subplot='mapbox', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=ak_df['FIPS'], z=ak_df['year'],
+                coloraxis='coloraxis', subplot='mapbox2', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.counties, locations=hi_df['FIPS'], z=hi_df['year'],
+                coloraxis='coloraxis', subplot='mapbox3', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        # State-boundary overlay on the main map only (not the AK/HI
+        # insets, which are already single-state views) -- a second
+        # trace drawn on top, transparent fill (its z/colorscale are
+        # irrelevant, chosen only so no fill color shows) and a
+        # thicker/darker line than the county borders below it, so
+        # state lines read clearly at a glance even zoomed into county
+        # detail. hoverinfo='skip' keeps it from swallowing hover
+        # tooltips meant for the county layer underneath.
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.states_geojson,
+                locations=[f['id'] for f in self.states_geojson['features']],
+                z=[0] * len(self.states_geojson['features']),
+                colorscale=[[0, 'rgba(0,0,0,0)'], [1, 'rgba(0,0,0,0)']],
+                showscale=False, subplot='mapbox', name='',
+                marker_line_width=1.5, marker_line_color='#333',
+                hoverinfo='skip',
+            ))
+
+        fig.update_layout(
+                # showscale=False: replaced by the interactive year
+                # slider below, which does the colorbar's old job.
+                coloraxis=dict(colorscale=self.colorscale_county, showscale=False),
+                **self.__mapbox_layout_base(),
+            )
+
         fig = self.__set_map_layout(fig)
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
@@ -193,31 +468,64 @@ class FlaskApp(FlaskView):
 
     def _compute_table(self, county_df):
 
-        state_list = county_df['state'].unique().tolist()
-        state_names = [config.abbrev_to_us_state[st] for st in state_list]
-
         grouper = county_df[['state', 'visited']].groupby('state')
-        n_visited = grouper.sum()
-        n_total = grouper.count()
-        # Rename the column
-        n_total = n_total.rename(mapper = {'visited': 'Total'}, axis=1)
-        n_visited = n_visited.rename(mapper = {'visited': 'Visited'}, axis=1)
-        # urls = [f'state_view?state={st}' for st in state_list]
-        urls = [f"<a class='tbl_btn' href='state_view?state={st}'>View</a>" for st in state_list]
-        url_df = pd.DataFrame(list(zip(state_names, urls) ), columns=['Name', 'URL'])
-        url_df.index = state_list # list(zip(state_list, urls)))
+        n_visited = grouper.sum().rename(mapper = {'visited': 'Visited'}, axis=1)
+        n_total = grouper.count().rename(mapper = {'visited': 'Total'}, axis=1)
 
-        n_visited = n_visited.sort_index()
-        n_total = n_total.sort_index()
-        url_df = url_df.sort_index()
-        table = pd.concat((n_visited.T, n_total.T, url_df.T)).T
-        table.index = np.arange(len(table))
+        # Concatenating on axis=1 aligns both series by their shared
+        # index (state abbreviation), so this doesn't depend on both
+        # sides happening to already be sorted the same way.
+        table = pd.concat((n_visited, n_total), axis=1)
+        table['Name'] = [config.abbrev_to_us_state[st] for st in table.index]
         table = table.sort_values('Name')
 
-        table_html = table.to_html(escape=False, index=False, columns=['Name', 'Visited', 'Total', 'URL'])
-#         print(table_html)
+        # A responsive card grid instead of a plain <table>: table rows
+        # can't reflow into multiple columns via CSS, but a grid of
+        # cards can -- one per row on narrow/mobile screens, several
+        # per row on wide ones, purely from available width.
+        cards = []
+        for abbrev, row in table.iterrows():
+            cards.append(
+                f"<a class='state-card' href='state_view?state={abbrev}'>"
+                f"<span class='state-card-name'>{row['Name']}</span>"
+                f"<span class='state-card-stat'>{int(row['Visited'])}/{int(row['Total'])} counties</span>"
+                f"</a>"
+            )
 
-        return table_html
+        return "<div class='state-grid'>" + "".join(cards) + "</div>"
+
+    def _compute_country_card_grid(self, rows_df):
+        # Same card-grid look as _compute_table's state list, but no
+        # href -- there's no per-country drill-down page the way
+        # state_view is a drill-down from the state list.
+        cards = []
+        for _, row in rows_df.iterrows():
+            cards.append(
+                f"<div class='state-card'>"
+                f"<span class='state-card-name'>{row['name']}</span>"
+                f"<span class='state-card-stat'>{row['iso_3']}</span>"
+                f"</div>"
+            )
+
+        return "<div class='state-grid'>" + "".join(cards) + "</div>"
+
+    def _compute_country_cards(self, country_df):
+        visited_df = country_df[country_df['visited'] == True].sort_values('name')
+        html = self._compute_country_card_grid(visited_df)
+
+        # Flown-through-only, not also-visited (visited supersedes
+        # flown-through here too, same as the map). A separate,
+        # independent grid div rather than more cards appended to the
+        # one above -- a block-level element always starts its own new
+        # line regardless of how many columns the grid above it
+        # happened to wrap into, which two grids sharing one row could
+        # never guarantee.
+        flown_through_df = country_df[(country_df['flown_through'] == True) & (country_df['visited'] == False)].sort_values('name')
+        if len(flown_through_df) > 0:
+            html += "<h2 class='country-section-header'>Flown Through</h2>"
+            html += self._compute_country_card_grid(flown_through_df)
+
+        return html
 
     @route('/state_view', methods=['POST', 'GET'])
     @authelia_required
@@ -302,11 +610,87 @@ class FlaskApp(FlaskView):
 
         visited_string = f' - {num_visited}/{self.num_counties} | {num_visited / self.num_counties * 100:.2f}%'
 
-        return render_template('notdash.html', 
-                graphJSON=self.template, 
-                stat_string=visited_string, 
-                title='Visited Counties', 
-                page_title='OwnTracks - Visited Counties')
+        # Computed fresh on every request, deliberately not folded into
+        # the cached self.template above: the cache-freshness check just
+        # above only compares num_visited/avg_county_year, and a backfill
+        # run can add an *earlier* year to an already-visited county
+        # without changing either of those aggregates. Baking this into
+        # the cached figure would make it go stale indefinitely after a
+        # backfill, not just briefly.
+        county_df = self.database.get_county_visits_dataframe()
+        years_by_fips = self.database.get_county_visit_years_dict()
+
+        first_visit_year = {}
+        county_hover_text = {}
+        visited_years = {}
+        for fips, name, state, cache_year in zip(county_df['FIPS'], county_df['name'], county_df['state'], county_df['year']):
+            years = years_by_fips.get(fips, [])
+            if not years and cache_year > -1:
+                # No county_visits rows at all, but counties.year says
+                # otherwise -- a pre-county_visits visit (the old
+                # add_historical_counties.py seeding, before this ledger
+                # existed to record it into). Falls back to that one
+                # known year rather than treating it as literally
+                # unvisited: "only" mode would otherwise have nothing to
+                # ever match against for these counties (no ledger entry
+                # means an always-empty year list), even though we do
+                # know -- just not with full-ledger granularity -- when
+                # they were visited. county_df['year'] is itself already
+                # offset by -2000 (get_county_visits_dataframe's own
+                # doing) -- undo that here so it's a raw year, matching
+                # years_by_fips' convention, before the shared -2000
+                # logic below reapplies the same offset for the client
+                # payload.
+                years = [cache_year + 2000]
+            if years:
+                first_visit_year[fips] = min(years) - 2000  # same offset convention as the z values below
+                county_hover_text[fips] = f"{name}, {state} — {_format_year_ranges(years)}"
+                visited_years[fips] = [y - 2000 for y in years]
+            else:
+                county_hover_text[fips] = f"{name}, {state} — not yet visited"
+
+        # True global min/max across the full ledger, computed fresh here
+        # (not cached in __precompute_graph -- see the comment left there)
+        # rather than counties.year's min-of-per-county-*maxes*, which
+        # could undercount how far back the slider's floor needs to
+        # reach. Falls back to the old counties.year-based computation
+        # only in the pre-backfill transitional state, when county_visits
+        # is still empty.
+        all_visit_years = [y for years in years_by_fips.values() for y in years]
+        if all_visit_years:
+            year_min = min(all_visit_years)
+            year_max = max(all_visit_years)
+        else:
+            cached_years = county_df.loc[county_df['year'] > -1, 'year']
+            if len(cached_years) > 0:
+                year_min = int(cached_years.min()) + 2000
+                year_max = int(cached_years.max()) + 2000
+            else:
+                year_min = year_max = datetime.now().year
+
+        # The server can't know the visitor's actual screen size, so
+        # the zoom/center baked into the figure above is only a
+        # reasonable first-paint guess (tuned for a desktop window).
+        # These bounds let the page correct each subplot's zoom
+        # client-side, against its real rendered pixel size, right
+        # after the map draws.
+        mapbox_bounds_json = json.dumps({
+                'mapbox': list(map(float, self.conti_bounds)),
+                'mapbox2': list(map(float, self.ak_bounds)),
+                'mapbox3': list(map(float, self.hi_bounds)),
+                'yearRange': [year_min, year_max],
+                'firstVisitYear': first_visit_year,
+                'visitedYears': visited_years,
+                'countyHoverText': county_hover_text,
+            })
+
+        return render_template('notdash.html',
+                graphJSON=self.template,
+                stat_string=visited_string,
+                title='Visited Counties',
+                page_title='OwnTracks - Visited Counties',
+                full_bleed_map=True,
+                mapbox_bounds_json=mapbox_bounds_json)
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/log_country', methods=['POST', 'GET'])
@@ -315,49 +699,226 @@ class FlaskApp(FlaskView):
             return Response(response= jsonpickle.encode({'error': 'Query must by of form "?country=<identifier>"', 'success': False}), status=400, mimetype="application/json")
 
         identifier = request.values['country']
-        country_add_success = self.database.set_visited_country(identifier)
-        if country_add_success:
+        # Checkbox: absent/unchecked when not submitted at all, so
+        # .get() rather than [] -- see the "Flown Through" checkbox
+        # in the country-bar form.
+        field = 'flown_through' if request.values.get('flown_through') == 'true' else 'visited'
+
+        # Looked up *before* the update, so the client can tell a real
+        # change from a no-op resubmit of something already set --
+        # only the former is safe to track as undoable (see
+        # get_country_status's docstring in location_db.py).
+        existing = self.database.get_country_status(identifier)
+        if existing is None:
+            # JSON, not the 404.html page -- this used to render a
+            # full error page since submission was a normal browser
+            # navigation, but the form now submits via fetch() (see
+            # notdash.html) and needs a consistent JSON shape on every
+            # response path, success or not.
+            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=404, mimetype="application/json")
+
+        was_already_set = existing[field]
+
+        if field == 'flown_through':
+            country_add_success = self.database.set_flown_through_country(identifier)
+        else:
+            country_add_success = self.database.set_visited_country(identifier)
+
+        return Response(response= jsonpickle.encode({
+                'error': "None",
+                'success': country_add_success,
+                'field': field,
+                'was_already_set': was_already_set,
+                'name': existing['name'],
+                'iso_3': existing['iso_3'],
+            }), status=200, mimetype="application/json")
+
+    @route('/undo_country', methods=['POST'])
+    def undo_country(self):
+        # Counterpart to /log_country for the undo button (see
+        # notdash.html) -- takes the exact {country, field} an earlier
+        # /log_country response said was safe to undo, and clears just
+        # that one column back to False.
+        if 'country' not in request.values or 'field' not in request.values:
+            return Response(response= jsonpickle.encode({'error': 'Query must be of form "?country=<identifier>&field=<visited|flown_through>"', 'success': False}), status=400, mimetype="application/json")
+
+        identifier = request.values['country']
+        field = request.values['field']
+        if field not in ('visited', 'flown_through'):
+            return Response(response= jsonpickle.encode({'error': f'Unrecognized field "{field}".', 'success': False}), status=400, mimetype="application/json")
+
+        if field == 'flown_through':
+            undo_success = self.database.unset_flown_through_country(identifier)
+        else:
+            undo_success = self.database.unset_visited_country(identifier)
+
+        if undo_success:
             return Response(response= jsonpickle.encode({'error': "None", 'success': True}), status=200, mimetype="application/json")
         else:
-            return render_template('404.html', error=f'Selected identifier "{identifier}" was not found in database.'), 404
-            # return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=400, mimetype="application/json")
+            return Response(response= jsonpickle.encode({'error': f'Selected identifier "{identifier}" was not found in database.', 'success': False}), status=404, mimetype="application/json")
 
     @route('/countries')
     @authelia_required
     def serve_country_graph(self):
 
-        country_df = self.database.get_visited_countries()
-        num_visited = len(country_df[country_df.visited == True])
+        country_df = self.database.get_all_countries_dataframe()
+        num_visited = int(country_df.visited.sum())
 
-        visited = country_df[country_df.visited]
+        # Same go.Choroplethmapbox approach as /counties -- a real
+        # pannable/zoomable tile map instead of the old static geo
+        # trace, so it isn't letterboxed inside its container. Just one
+        # subplot (no AK/HI-style insets needed for a world map).
+        #
+        # Each visited country gets its own color (see _country_color)
+        # instead of one shared "visited" color; flown-through-only
+        # countries (flown_through, but not visited -- visited always
+        # takes priority when both are set) share one neutral tint;
+        # unvisited/never-flown countries get no color at all (opacity
+        # 0, see below). A single z/colorscale normally means one
+        # continuous gradient, so this builds a "stepped" colorscale
+        # instead: two colorscale stops at the start/end of each
+        # category's z-slice, both the same color, which creates a
+        # hard-edged flat block rather than a gradient into its
+        # neighbors' slices. category 0 = unvisited/never-flown,
+        # category 1 = flown-through-only, categories 2..N+1 = one per
+        # visited country.
+        visited_codes = sorted(country_df.loc[country_df['visited'] == True, 'iso_3'])
+        iso3_to_category = {code: i + 2 for i, code in enumerate(visited_codes)}
+        country_df['color_category'] = country_df['iso_3'].map(iso3_to_category)
+        flown_through_only = (country_df['flown_through'] == True) & (country_df['visited'] == False)
+        country_df.loc[flown_through_only, 'color_category'] = 1
+        country_df['color_category'] = country_df['color_category'].fillna(0).astype(int)
 
-        country_name_list = visited.name.tolist()
-        
-        table_df = country_df.rename(columns={'name': 'Countries Visited'})
-        table_html = table_df.to_html(escape=False, index=False, columns=['Countries Visited'])
+        FLOWN_THROUGH_COLOR = '#5B84B1'
+        num_categories = len(visited_codes) + 2
+        palette = ['#F5F3ED', FLOWN_THROUGH_COLOR] + [_country_color(code) for code in visited_codes]
+        colorscale = []
+        for k, color in enumerate(palette):
+            colorscale.append([k / num_categories, color])
+            colorscale.append([(k + 1) / num_categories, color])
 
-        fig = px.choropleth(locationmode="country names", 
-                            locations=country_name_list, 
-                            hover_name=country_name_list)
+        # Fill opacity per country -- 0 (fully transparent) for
+        # unvisited/never-flown, so the basemap shows through
+        # completely instead of a flat neutral fill; 0.25 for
+        # flown-through-only, a light tint; 0.5 for visited, so the
+        # basemap is still partly visible under the color.
+        # np.select checks 'visited' first, so a country that's both
+        # gets the visited opacity, matching the same priority as the
+        # color category above. marker.opacity accepts a per-location
+        # array same as z does; the border (marker.line) is a separate
+        # style layer with its own opacity (left at its default, fully
+        # opaque) so country outlines stay visible everywhere
+        # regardless of fill opacity.
+        country_df['fill_opacity'] = np.select(
+                [country_df['visited'], country_df['flown_through']],
+                [0.5, 0.25],
+                default=0.0,
+            )
+
+        # Hover: bare name for visited/unvisited (unchanged), but
+        # flown-through-only countries get a qualifier -- otherwise
+        # there'd be no way to tell from the hover alone why a country
+        # is tinted differently than a fully unvisited one.
+        country_df['hover_label'] = country_df['name']
+        country_df.loc[flown_through_only, 'hover_label'] = country_df.loc[flown_through_only, 'name'] + ' (flown through)'
+
+        fig = go.Figure()
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.world_countries_geojson, locations=country_df['iso_3'],
+                # +0.5: the middle of each category's z-slice, so it's
+                # unambiguously inside its own step rather than sitting
+                # right on a boundary between two colors. This z is
+                # purely an internal color-bucket index (see above),
+                # meaningless to a viewer, so it's kept out of the
+                # hover entirely -- hovertemplate replaces the default
+                # location(iso_3)+z hover with just the country name
+                # (via customdata, since `locations` has to stay the
+                # iso_3 code for the geojson lookup to work) and
+                # <extra></extra> drops the default trace-name box too.
+                z=country_df['color_category'] + 0.5, zmin=0, zmax=num_categories,
+                marker_opacity=country_df['fill_opacity'],
+                customdata=country_df['hover_label'], hovertemplate='%{customdata}<extra></extra>',
+                coloraxis='coloraxis', subplot='mapbox',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+
+        # Visited micro-countries (Vatican, Monaco, San Marino, ...)
+        # are a sub-pixel dot on a world map -- their choropleth fill
+        # is technically there but never visible. Flag any visited
+        # country whose bounding-box diagonal is under this threshold
+        # (picked by eyeballing the actual size distribution: it
+        # catches true microstates/city-states without also flagging
+        # merely-small-but-still-visible countries like Luxembourg or
+        # Qatar) with a marker at its centroid instead.
+        #
+        # mode='markers' (a plain circle), not marker(symbol='star') or
+        # mode='text' with a star glyph -- both were tried and neither
+        # actually showed up on screen. symbol='star' needs Mapbox's
+        # hosted icon sprites, which needs an access token this app
+        # doesn't have (it deliberately uses the free, tokenless
+        # carto-positron style). mode='text' compiles to a mapbox-gl
+        # *symbol* layer, which has collision detection *on* by
+        # default -- if it decides the glyph would overlap the
+        # basemap's own labels (a city name, a sea label, etc.) at
+        # that zoom, it silently drops it, and Plotly's declarative API
+        # doesn't expose the style-spec property to turn that off. A
+        # plain circle marker compiles to a *circle* layer instead,
+        # which isn't part of that collision system at all -- it
+        # always draws.
+        TINY_COUNTRY_DIAGONAL_DEGREES = 0.5
+        iso3_to_name = dict(zip(country_df['iso_3'], country_df['name']))
+        id_to_geometry = {f['id']: f['geometry'] for f in self.world_countries_geojson['features']}
+
+        star_lons, star_lats, star_names = [], [], []
+        for code in visited_codes:
+            geom = shape(id_to_geometry[code])
+            minx, miny, maxx, maxy = geom.bounds
+            if math.hypot(maxx - minx, maxy - miny) < TINY_COUNTRY_DIAGONAL_DEGREES:
+                centroid = geom.centroid
+                star_lons.append(centroid.x)
+                star_lats.append(centroid.y)
+                star_names.append(iso3_to_name[code])
+
+        if star_lons:
+            fig.add_trace(go.Scattermapbox(
+                    lon=star_lons, lat=star_lats,
+                    mode='markers', marker=dict(size=16, color='#000000'),
+                    customdata=star_names, hovertemplate='%{customdata}<extra></extra>',
+                    subplot='mapbox', showlegend=False,
+                ))
+
+        fig.update_layout(
+                coloraxis=dict(colorscale=colorscale, showscale=False),
+                mapbox=dict(
+                        style='carto-positron',
+                        center=dict(lat=20, lon=0),
+                        # A fixed, eyeballed default (like the
+                        # continental US subplot's zoom=3.3) rather
+                        # than a bounds-fit calculation -- fitting the
+                        # world's *true* lat extent pulls the center
+                        # toward the high-Arctic countries, which looks
+                        # wrong for a "world overview" default. The
+                        # user can freely pan/zoom from here.
+                        zoom=0.8,
+                        domain=dict(x=[0, 1], y=[0, 1]),
+                    ),
+            )
 
         fig = self.__set_map_layout(fig)
         visited_string = f' | {num_visited} Countries Visited'
 
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-        return render_template('notdash.html', 
-            graphJSON=graphJSON, 
-            stat_string=visited_string, 
-            title='Visited Countries', 
-            more_html = table_html,
+        country_cards = self._compute_country_cards(country_df)
+
+        return render_template('notdash.html',
+            graphJSON=graphJSON,
+            stat_string=visited_string,
+            title='Visited Countries',
+            more_html=country_cards,
+            full_bleed_map=True,
+            show_country_bar=True,
             page_title='OwnTracks - Visited Countries')
-
-
-        # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany"]
-        # >>> 
-        # >>> fig.show()
-        # >>> ll = ['USA', 'Mexico', 'Peru', 'Brazil', 'France', "United Kingdom", "Germany", 'Canada', 'Panama']
-        # >>> fig = px.choropleth(locationmode="country names", locations=ll, hover_name=ll)
 
 
     @route('/states')
@@ -370,17 +931,42 @@ class FlaskApp(FlaskView):
         dc_visited = bool(state_df[state_df.state == 'DC'].visited.any())
         if dc_visited:
             num_visited -= 1
-            
-        df = state_df[state_df.visited == True]
-        
-        fig = px.choropleth(df,
-                locations='state',
-                locationmode='USA-states',
-                color='year',
-                color_continuous_scale=self.colorscale,
-                scope='usa',
-                )        
 
+        # Same go.Choroplethmapbox + continental/AK/HI inset approach
+        # as /counties (states has the same "Alaska is far away"
+        # problem), colored by visit year -- unlike /countries, states
+        # does track that, so keep the gradient + year slider instead
+        # of switching to a binary visited/unvisited color. State
+        # outlines come from self.states_geojson (counties dissolved up
+        # to state boundaries at startup, see _initilization). AK/HI
+        # are included on the main map (not just their insets) so
+        # panning/zooming out to their true location shows them
+        # colored rather than a blank basemap.
+        main_df = state_df
+        ak_df = state_df[state_df['state'] == 'AK']
+        hi_df = state_df[state_df['state'] == 'HI']
+
+        fig = go.Figure()
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.states_geojson, locations=main_df['state'], z=main_df['year'],
+                coloraxis='coloraxis', subplot='mapbox', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.states_geojson, locations=ak_df['state'], z=ak_df['year'],
+                coloraxis='coloraxis', subplot='mapbox2', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+        fig.add_trace(go.Choroplethmapbox(
+                geojson=self.states_geojson, locations=hi_df['state'], z=hi_df['year'],
+                coloraxis='coloraxis', subplot='mapbox3', name='',
+                marker_line_width=0.4, marker_line_color='#888',
+            ))
+
+        fig.update_layout(
+                coloraxis=dict(colorscale=self.colorscale_county, showscale=False),
+                **self.__mapbox_layout_base(),
+            )
 
         fig = self.__set_map_layout(fig)
         visited_string = f' | {num_visited}/50 States{" & DC" if dc_visited else ""} Visited'
@@ -388,13 +974,74 @@ class FlaskApp(FlaskView):
         graphJSON = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
         county_df = self.database.get_county_visits_dataframe()
-        state_urls = self._compute_table(county_df)
-        return render_template('notdash.html', \
-                               graphJSON=graphJSON, \
-                               stat_string=visited_string, \
-                               title='Visited States',
-                               page_title='OwnTracks - Visited States',
-                               more_html = state_urls)
+        state_cards = self._compute_table(county_df)
+
+        # Per-state visit-year history, same idea as /counties'
+        # firstVisitYear/visitedYears/countyHoverText (see
+        # serve_county_graph above) -- powers both the cumulative
+        # "up to this year" slider mode and the "only this year" mode.
+        years_by_state = self.database.get_state_visit_years_dict()
+        first_visit_year = {}
+        state_hover_text = {}
+        visited_years = {}
+        for state, cache_year in zip(main_df['state'], main_df['year']):
+            state_name = config.abbrev_to_us_state.get(state, state)
+            years = years_by_state.get(state, [])
+            if not years and cache_year > -1:
+                # Same pre-county_visits fallback as serve_county_graph
+                # above -- a state whose only evidence is a county visited
+                # via the old add_historical_counties.py seeding, before
+                # this ledger existed. cache_year is already offset by
+                # -2000 (get_state_visits_dataframe's own doing, same
+                # convention as counties) -- undo that before reusing the
+                # shared -2000 logic below.
+                years = [cache_year + 2000]
+            if years:
+                first_visit_year[state] = min(years) - 2000
+                state_hover_text[state] = f"{state_name} — {_format_year_ranges(years)}"
+                visited_years[state] = [y - 2000 for y in years]
+            else:
+                state_hover_text[state] = f"{state_name} — not yet visited"
+
+        # True global min/max across the full ledger, computed fresh here
+        # every request -- same fix /counties has in serve_county_graph
+        # (deliberately *not* cached in a __precompute_graph-style method
+        # for either page, so a historical-points commit that only adds
+        # an earlier year can't leave this stale). A state's own cached
+        # year used to be the max of its counties' *max* years, which
+        # could sit later than that state's true first visit. Falls back
+        # to the old counties-cache-derived computation only if the
+        # ledger is empty (pre-backfill transitional state).
+        all_years = [y for years in years_by_state.values() for y in years]
+        if all_years:
+            year_min = min(all_years)
+            year_max = max(all_years)
+        else:
+            cached_years = state_df.loc[state_df['year'] > -1, 'year']
+            if len(cached_years) > 0:
+                year_min = int(cached_years.min()) + 2000
+                year_max = int(cached_years.max()) + 2000
+            else:
+                year_min = year_max = datetime.now().year
+
+        mapbox_bounds_json = json.dumps({
+                'mapbox': list(map(float, self.conti_bounds)),
+                'mapbox2': list(map(float, self.ak_bounds)),
+                'mapbox3': list(map(float, self.hi_bounds)),
+                'yearRange': [year_min, year_max],
+                'firstVisitYear': first_visit_year,
+                'visitedYears': visited_years,
+                'countyHoverText': state_hover_text,
+            })
+
+        return render_template('notdash.html',
+                graphJSON=graphJSON,
+                stat_string=visited_string,
+                title='Visited States',
+                page_title='OwnTracks - Visited States',
+                more_html=state_cards,
+                full_bleed_map=True,
+                mapbox_bounds_json=mapbox_bounds_json)
 
 
     @route('/log', methods=['GET', 'POST'])
@@ -769,13 +1416,36 @@ class FlaskApp(FlaskView):
         # After Authelia logs out, the user will be unauthenticated next time they visit.
         return response
 
+    @route('/engineering')
+    @authelia_required
+    def serve_engineering(self):
+        # No link to this page anywhere in the nav -- URL-only, by design.
+        progress = self.database.get_processing_progress()
+        return render_template('engineering.html',
+                page_title='OwnTracks - Engineering',
+                **progress)
+
+    @route('/engineering_status')
+    @authelia_required
+    def serve_engineering_status(self):
+        progress = self.database.get_processing_progress()
+        return Response(response=jsonpickle.encode(progress), status=200, mimetype="application/json")
+
+
+# The Add Country form lives in the shared top nav (.country-bar),
+# rendered on every page, so its autocomplete data needs to be in
+# every template's context rather than just one route's.
+@app.context_processor
+def inject_country_list():
+    return dict(country_list_json=FlaskApp.country_list_json)
+
 
 # This weird technique, and not having an
 # __init__ in the traditional sense, is because the
 # register function runs __init__ once for each route.
 # Solution is from flask_classful issues at
 # https://github.com/pallets-eco/flask-classful/issues/114
-# and is admittedly a hack but it works. 
+# and is admittedly a hack but it works.
 FlaskApp._initilization()
 FlaskApp.register(app,route_base = '/')
 
