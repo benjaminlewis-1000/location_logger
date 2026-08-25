@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, date, timezone
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from dotenv import load_dotenv
 from flask import Flask, render_template, Response, request, redirect, url_for, abort, make_response
 from flask_classful import FlaskView, route
@@ -1136,12 +1136,18 @@ class FlaskApp(FlaskView):
                 mapbox_bounds_json=mapbox_bounds_json)
 
 
-    @route('/app_properties', methods=['GET'])
+    @route('/Owntracks Profile', methods=['GET'])
     @_rate_limited(min_interval_seconds=3)
     # GPSLogger's own "Default Profile -> From URL" import feature fetches
     # this directly from the phone, with no browser session -- same
     # reason /log and /client/index.php below are also unauthenticated.
     # See CLAUDE.md and /engineering's "Phone app setup" instructions.
+    #
+    # The slug is literally the display name, not a REST-y path -- found
+    # empirically (real device test): GPSLogger names the imported
+    # profile after the URL's last path segment, not the file's own
+    # current_profile_name value. Confirmed Werkzeug correctly routes a
+    # %20-encoded request here (not '+', which is query-string-only).
     def serve_gpslogger_properties(self):
         properties_text = _render_gpslogger_properties(self.database)
         return Response(response=properties_text, status=200, mimetype='text/plain')
@@ -1525,7 +1531,7 @@ class FlaskApp(FlaskView):
         progress = self.database.get_processing_progress()
         # Computed here, not as {{ request.url_root }} in the template --
         # see _external_base_url()'s own comment for why that's broken.
-        properties_url = f"{_external_base_url()}/app_properties"
+        properties_url = f"{_external_base_url()}/{quote('Owntracks Profile')}"
         return render_template('engineering.html',
                 page_title='OwnTracks - Engineering',
                 properties_url=properties_url,
