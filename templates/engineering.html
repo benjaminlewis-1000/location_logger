@@ -271,6 +271,23 @@
       </details>
     </div>
 
+    <div class="progress-block">
+      <h2>Phone app setup (GPSLogger)</h2>
+      <details class="gdrive-setup" open>
+        <summary>Setup instructions</summary>
+        <ol>
+          <li>Install GPSLogger from <a href="https://gpslogger.app/" target="_blank" rel="noopener">gpslogger.app</a> -- it isn't on the Play Store, so this is a direct/sideloaded install.</li>
+          <li>Open the app and sign in with Google when it asks for Drive access -- this is the app's own sign-in, nothing to configure on the server for it.</li>
+          <li>Tap the profile name at the top (starts as "Default Profile") &rarr; <strong>From URL</strong>, and paste in:
+            <div class="gdrive-current-selection"><code>{{ properties_url }}</code></div>
+            Or, if you're reading this page on the phone itself, just tap: <a href="gpslogger://properties/{{ properties_url | urlencode }}">Load this profile directly</a>.
+          </li>
+          <li>Confirm the folder GPSLogger shows for its Drive upload matches the "Watched folder" shown above.</li>
+        </ol>
+        <p class="gdrive-current-selection">This profile is a deliberately practical, low-power balance, not a maxed-out logging rate -- in real-world use it checks in roughly every 15 seconds, which is enough to see what you're doing without draining the battery.</p>
+      </details>
+    </div>
+
     <div class="stale-note" id="last-updated">Updated just now</div>
   </div>
 

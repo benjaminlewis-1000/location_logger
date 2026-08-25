@@ -23,6 +23,10 @@ country_file = os.path.join(config_dir, 'countries.csv')
 # by name -- see the generation notes in CLAUDE.md.
 world_country_json = os.path.join(config_dir, 'world-countries.geojson')
 
+# Served at /app_properties for the GPSLogger phone app's "Default
+# Profile -> From URL" import -- see CLAUDE.md.
+gpslogger_properties_file = os.path.join(config_dir, 'gpslogger_default_profile.properties')
+
 # These won't capture the entire county, but are designed
 # to get the bulk of the points from the county.
 # Doesn't have to be all of a county, it can just be a 

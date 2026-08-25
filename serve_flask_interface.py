@@ -86,6 +86,83 @@ def _clean_redirect_target():
         return f"{request.base_url}?{urlencode(other_args)}"
     return request.base_url
 
+def _rate_limited(min_interval_seconds):
+    # Simple, dependency-free per-IP throttle -- correct with no
+    # cross-process coordination needed since this app runs single-
+    # worker gunicorn everywhere (no -w/--workers flag anywhere in
+    # startup.sh). Only meant for the one route that has to be public
+    # (/app_properties -- GPSLogger's URL-fetch can't do a browser
+    # Authelia login), not a general-purpose mechanism.
+    def decorator(f):
+        last_seen = {}
+
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            now = time.time()
+            ip = request.remote_addr
+            if len(last_seen) > 1000:
+                # Cheap guard against unbounded growth over a long-
+                # running process -- this route will realistically be
+                # hit a handful of times ever, so losing the throttle
+                # state for existing IPs on a clear is a non-issue.
+                last_seen.clear()
+            if now - last_seen.get(ip, 0) < min_interval_seconds:
+                return Response(response='Too many requests', status=429, mimetype='text/plain')
+            last_seen[ip] = now
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def _external_base_url():
+    # NOT request.url_root/request.base_url -- confirmed empirically
+    # that Werkzeug 3.1.8's Request.host (and anything built from it)
+    # comes back empty specifically when ProxyFix has actually rewritten
+    # the host from X-Forwarded-Host, even though ProxyFix correctly
+    # writes the right value into environ['HTTP_HOST'] itself (verified
+    # directly: request.environ['HTTP_HOST'] is correct, request.host is
+    # not, only when there's something for ProxyFix to rewrite -- with
+    # no forwarding headers at all, request.host works fine, which is
+    # what let this go unnoticed elsewhere in the app so far). Reading
+    # the environ value directly sidesteps the bug entirely.
+    return f"{request.scheme}://{request.environ.get('HTTP_HOST', request.host)}"
+
+
+def _escape_properties_value(value):
+    # Java .properties syntax -- ':' and '=' are both valid key/value
+    # separators, so a value containing either has to escape it (already
+    # visible in the template's own log_customurl_url line).
+    return value.replace('\\', '\\\\').replace(':', '\\:').replace('=', '\\=')
+
+
+def _render_gpslogger_properties(database):
+    # Serves config_files/gpslogger_default_profile.properties almost
+    # verbatim -- substituting only the two fields that need to track
+    # this app's own live state, by key rather than a placeholder token,
+    # so the template file itself stays a complete, valid, sensible-
+    # looking properties file if read directly.
+    with open(config.gpslogger_properties_file) as f:
+        lines = f.readlines()
+
+    folder = database.get_gdrive_folder()
+    folder_name = (folder['folder_name'] if folder else None) or 'GPSLogger'
+    log_url = f"{_external_base_url()}/log"
+
+    substitutions = {
+        'google_drive_folder_path': folder_name,
+        'log_customurl_url': log_url,
+    }
+
+    out_lines = []
+    for line in lines:
+        key = line.split('=', 1)[0] if '=' in line else None
+        if key in substitutions:
+            out_lines.append(f"{key}={_escape_properties_value(substitutions[key])}\n")
+        else:
+            out_lines.append(line)
+    return ''.join(out_lines)
+
+
 def authelia_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -1059,6 +1136,16 @@ class FlaskApp(FlaskView):
                 mapbox_bounds_json=mapbox_bounds_json)
 
 
+    @route('/app_properties', methods=['GET'])
+    @_rate_limited(min_interval_seconds=3)
+    # GPSLogger's own "Default Profile -> From URL" import feature fetches
+    # this directly from the phone, with no browser session -- same
+    # reason /log and /client/index.php below are also unauthenticated.
+    # See CLAUDE.md and /engineering's "Phone app setup" instructions.
+    def serve_gpslogger_properties(self):
+        properties_text = _render_gpslogger_properties(self.database)
+        return Response(response=properties_text, status=200, mimetype='text/plain')
+
     @route('/log', methods=['GET', 'POST'])
     # https://owntracks.exploretheworld.tech/log
     # HTTP body: %ALL
@@ -1436,8 +1523,12 @@ class FlaskApp(FlaskView):
     def serve_engineering(self):
         # No link to this page anywhere in the nav -- URL-only, by design.
         progress = self.database.get_processing_progress()
+        # Computed here, not as {{ request.url_root }} in the template --
+        # see _external_base_url()'s own comment for why that's broken.
+        properties_url = f"{_external_base_url()}/app_properties"
         return render_template('engineering.html',
                 page_title='OwnTracks - Engineering',
+                properties_url=properties_url,
                 **progress)
 
     @route('/engineering_status')
