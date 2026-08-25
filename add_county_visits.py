@@ -30,6 +30,24 @@ class CountyAdder(object):
 
         self.speed_thresh = 45 # 45 m/s ~= 100 mph
 
+        # Catches flyovers the speed filter alone misses -- confirmed
+        # directly against real data (Kane County IL, Blackford County
+        # IN, Atlantic County NJ): a small/sparse in-flight cluster can
+        # dilute both simple_speed and averaged_speed below speed_thresh
+        # (net displacement over a gap that includes non-flying time), and
+        # a stale cached GPS fix can show ~0 apparent speed while the
+        # phone is genuinely airborne. Altitude sidesteps both -- it's
+        # unaffected by either failure mode, and is already 100% populated
+        # in positions (confirmed: 0 NULLs across the full table).
+        # 2500m (~8200ft) sits above nearly all continental US ground
+        # elevation reachable by road, while comfortably below typical
+        # small-aircraft cruise. Known accepted gap: a handful of the
+        # highest paved US roads (Mount Evans CO ~4300m, Trail Ridge Road
+        # and Independence Pass ~3700m) exceed this and would have a real
+        # visit wrongly excluded -- fixing that needs ground-elevation
+        # (above-ground-level, not raw MSL) data, out of scope here.
+        self.altitude_thresh = 2500
+
         # 'ongoing' (the regular cron pipeline): updates the county_processed
         # tracking flag and the counties.visited/year max-year cache, same as
         # always. 'backfill' (a one-off historical replay): tracks progress on
@@ -72,6 +90,12 @@ class CountyAdder(object):
 
         self.alldata['simple_speed'] = 999.0
         self.alldata['averaged_speed'] = 999.0
+        # Same conservative-default reasoning as the two speed columns
+        # above -- calculate_speeds' loop deliberately doesn't touch the
+        # last 5 rows of a batch (see its own range(len(...) - 5)), so
+        # this default has to independently flag those rows as suspect
+        # too, not rely on the speed columns' own defaults doing it.
+        self.alldata['smoothed_altitude'] = 999999.0
 
         # self.alldata = database.get_debug_subset()
         # self.alldata.county_proc = False
@@ -87,14 +111,19 @@ class CountyAdder(object):
 
         # Calculate speeds
         self.calculate_speeds(infrequent_unprocessed)
-        # Then filter based on speed
-        too_fast = (infrequent_unprocessed.simple_speed > self.speed_thresh) \
-            | (infrequent_unprocessed.averaged_speed > self.speed_thresh)
-        good_speeds = ~too_fast
+        # Then filter based on speed and altitude -- flyover_suspect, not
+        # just too_fast, since altitude alone (a stale/repeated GPS fix
+        # showing ~0 apparent speed while genuinely airborne) can trip
+        # this without either speed check doing so. See altitude_thresh's
+        # own comment for why this is needed alongside speed at all.
+        flyover_suspect = (infrequent_unprocessed.simple_speed > self.speed_thresh) \
+            | (infrequent_unprocessed.averaged_speed > self.speed_thresh) \
+            | (infrequent_unprocessed.smoothed_altitude > self.altitude_thresh)
+        good_speeds = ~flyover_suspect
         filtered_points = infrequent_unprocessed[good_speeds].copy()
 
-        # Find the ID's of the too fast points and set them to processed
-        fast_ids = infrequent_unprocessed[too_fast].id.tolist()
+        # Find the ID's of the too fast/too high points and set them to processed
+        fast_ids = infrequent_unprocessed[flyover_suspect].id.tolist()
         self.database.set_pointlist_county_processed(fast_ids, column=self.processed_column)
 
         # Replay the counties.
@@ -129,6 +158,7 @@ class CountyAdder(object):
 
         avg_speed_col = infrequent_array.columns.get_loc('averaged_speed')
         inst_speed_col = infrequent_array.columns.get_loc('simple_speed')
+        alt_col = infrequent_array.columns.get_loc('smoothed_altitude')
 
         # for rownum in range(len(infrequent_array)):
         # tqdm(range(0, len(unprocessed_data)))
@@ -213,6 +243,18 @@ class CountyAdder(object):
                 speed_1 = dist_1 / timediff_1
 
             infrequent_array.iat[rownum, inst_speed_col] = speed_1
+
+            ############################
+            # Calculate smoothed altitude
+            ############################
+            # Median of [this point, its immediate before/after neighbors]
+            # -- rejects a single-point altitude glitch (confirmed in real
+            # data: a lone ~230m outlier sandwiched between two ~2600m
+            # readings mid-flight) without needing a larger window, since
+            # the median just falls back to whichever of the other two
+            # agree.
+            alt_values = sorted([float(row.altitude), float(before_1_data.altitude), float(after_1_data.altitude)])
+            infrequent_array.iat[rownum, alt_col] = alt_values[1]
 
 
         return infrequent_array.copy()
