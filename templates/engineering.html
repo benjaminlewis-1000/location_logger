@@ -227,7 +227,7 @@
       <h2>Google Drive sync (ongoing GPS data)</h2>
 
       <div class="gdrive-status">
-        <div>Watched folder: <strong id="gdrive-folder-name">{{ gdrive_folder_name or 'not set' }}</strong></div>
+        <div>Watched folder: <strong id="gdrive-folder-name">{{ gdrive_folder_path or gdrive_folder_name or 'not set' }}</strong></div>
         <div>Last file checked: <span id="gdrive-filename">{{ gdrive_filename or '—' }}</span></div>
         <div>Last checked: <span id="gdrive-last-checked">—</span></div>
         <div>Last new content pulled: <span id="gdrive-last-changed">—</span></div>
@@ -290,7 +290,7 @@
           .then(function(data) {
             applyProgress('ongoing', data.ongoing_done, data.total, data.ongoing_pct);
             applyProgress('backfill', data.backfill_done, data.total, data.backfill_pct);
-            document.getElementById('gdrive-folder-name').textContent = data.gdrive_folder_name || 'not set';
+            document.getElementById('gdrive-folder-name').textContent = data.gdrive_folder_path || data.gdrive_folder_name || 'not set';
             document.getElementById('gdrive-filename').textContent = data.gdrive_filename || '—';
             document.getElementById('gdrive-last-checked').textContent = fmtEpoch(data.gdrive_last_checked_utc);
             document.getElementById('gdrive-last-changed').textContent = fmtEpoch(data.gdrive_last_changed_utc);
@@ -417,16 +417,18 @@
 
       selectBtn.addEventListener('click', function() {
         var current = trail[trail.length - 1];
+        var path = trail.map(function(n) { return n.name; }).join(' / ');
         var formData = new URLSearchParams();
         formData.append('folder_id', current.id);
         formData.append('folder_name', current.name);
+        formData.append('folder_path', path);
 
         fetch('/set_gdrive_folder', {method: 'POST', credentials: 'same-origin', body: formData})
           .then(function(resp) { return resp.json(); })
           .then(function(data) {
             if (data.success) {
-              showMessage(folderMsg, 'Watching "' + data.folder_name + '".', false);
-              document.getElementById('gdrive-folder-name').textContent = data.folder_name;
+              showMessage(folderMsg, 'Watching "' + data.folder_path + '".', false);
+              document.getElementById('gdrive-folder-name').textContent = data.folder_path;
             } else {
               showMessage(folderMsg, data.error || 'Could not set folder.', true);
             }

@@ -114,6 +114,7 @@ class locationDB:
                 Column('id', Integer, primary_key=True),
                 Column('folder_id', String),
                 Column('folder_name', String),
+                Column('folder_path', String),
             )
 
         # Per-file content-hash tracking for the same sync -- replaces the
@@ -172,6 +173,13 @@ class locationDB:
             if not exist_gs:
                 print("Need to add gdrive_settings table")
                 metadata.create_all(self.engine)
+            else:
+                gs_columns = [c['name'] for c in insp.get_columns('gdrive_settings')]
+                if 'folder_path' not in gs_columns:
+                    sql_insert = 'alter table gdrive_settings add column folder_path VARCHAR'
+                    with self.engine.begin() as conn2:
+                        conn2.execute(text(sql_insert))
+                        conn2.commit()
 
             exist_gss = insp.has_table("gdrive_sync_state")
             if not exist_gss:
@@ -704,6 +712,7 @@ class locationDB:
 
         gs = self.conn.execute(select(self.gdrive_settings).where(self.gdrive_settings.c.id == 1)).fetchone()
         gdrive_folder_name = gs.folder_name if gs else None
+        gdrive_folder_path = gs.folder_path if gs else None
 
         latest = self.conn.execute(
                 select(self.gdrive_sync_state)
@@ -717,6 +726,7 @@ class locationDB:
             'backfill_done': backfill_done,
             'backfill_pct': backfill_pct,
             'gdrive_folder_name': gdrive_folder_name,
+            'gdrive_folder_path': gdrive_folder_path,
             'gdrive_filename': latest.filename if latest else None,
             'gdrive_last_checked_utc': latest.last_checked_utc if latest else None,
             'gdrive_last_changed_utc': latest.last_changed_utc if latest else None,
@@ -726,15 +736,16 @@ class locationDB:
         row = self.conn.execute(select(self.gdrive_settings).where(self.gdrive_settings.c.id == 1)).fetchone()
         if row is None:
             return None
-        return {'folder_id': row.folder_id, 'folder_name': row.folder_name}
+        return {'folder_id': row.folder_id, 'folder_name': row.folder_name, 'folder_path': row.folder_path}
 
-    def set_gdrive_folder(self, folder_id: str, folder_name: str):
+    def set_gdrive_folder(self, folder_id: str, folder_name: str, folder_path: str = None):
         exists = self.conn.execute(select(self.gdrive_settings.c.id).where(self.gdrive_settings.c.id == 1)).fetchone()
         if exists is None:
-            self.conn.execute(self.gdrive_settings.insert().values(id=1, folder_id=folder_id, folder_name=folder_name))
+            self.conn.execute(self.gdrive_settings.insert().values(
+                id=1, folder_id=folder_id, folder_name=folder_name, folder_path=folder_path))
         else:
             self.conn.execute(self.gdrive_settings.update().where(self.gdrive_settings.c.id == 1)
-                    .values(folder_id=folder_id, folder_name=folder_name))
+                    .values(folder_id=folder_id, folder_name=folder_name, folder_path=folder_path))
         self.conn.commit()
 
     def get_gdrive_sync_state(self, file_id: str):

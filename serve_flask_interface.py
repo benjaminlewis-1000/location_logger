@@ -1524,12 +1524,17 @@ class FlaskApp(FlaskView):
     def set_gdrive_folder(self):
         folder_id = request.values.get('folder_id')
         folder_name = request.values.get('folder_name', '')
+        # The full breadcrumb path (e.g. "My Drive / Ultra GPS Logger /
+        # GPSLogger") -- the client already has this from its own trail
+        # state at selection time, cheaper than reconstructing it here
+        # via repeated gdrive files info calls walking up parents.
+        folder_path = request.values.get('folder_path', folder_name)
         if not folder_id:
             return Response(response=jsonpickle.encode({'success': False, 'error': 'No folder specified.'}),
                     status=400, mimetype="application/json")
 
-        self.database.set_gdrive_folder(folder_id, folder_name)
-        return Response(response=jsonpickle.encode({'success': True, 'folder_id': folder_id, 'folder_name': folder_name}),
+        self.database.set_gdrive_folder(folder_id, folder_name, folder_path)
+        return Response(response=jsonpickle.encode({'success': True, 'folder_id': folder_id, 'folder_name': folder_name, 'folder_path': folder_path}),
                 status=200, mimetype="application/json")
 
 
