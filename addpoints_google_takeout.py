@@ -1,6 +1,6 @@
 
 from calendar import timegm
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, Response, session, redirect, render_template, request, abort, jsonify
 from sqlalchemy import create_engine
 from sqlalchemy import Table, Column, Integer, String, MetaData, ForeignKey, DateTime, Float
@@ -19,7 +19,6 @@ import random
 import re
 import requests
 import sqlalchemy
-import time
 import urllib
 import location_db
 import config
@@ -130,7 +129,12 @@ if __name__ == "__main__":
             except ValueError:
                 date_data = datetime.strptime(data_item['timestamp'], "%Y-%m-%dT%H:%M:%SZ")
 
-            utc = time.mktime(date_data.timetuple())
+            # date_data is naive but represents UTC (Google Takeout
+            # timestamps always end in "Z") -- attach that explicitly
+            # before converting, rather than time.mktime(timetuple()),
+            # which silently re-interpreted it as local time whenever
+            # $TZ was set. Same bug, same fix, as addpoints_gpx_google.py.
+            utc = date_data.replace(tzinfo=timezone.utc).timestamp()
             lat = float(data_item['latitudeE7'] * 1e-7)
             lon = float(data_item['longitudeE7'] * 1e-7)
             print(f"Progress: {done}, {data_item['timestamp']}")
