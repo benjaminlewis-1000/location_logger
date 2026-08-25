@@ -2,7 +2,6 @@
 
 import os
 import gpxpy
-import time
 import shutil
 from datetime import datetime, timedelta
 
@@ -41,7 +40,15 @@ def read_process_gps(file):
                     uid_dict[user_id] = uuid
 
 
-                utc = time.mktime(point.time.timetuple())
+                # point.time is timezone-aware (UTC, per the GPX spec) --
+                # .timestamp() converts it correctly regardless of the
+                # process's own local timezone. time.mktime(timetuple())
+                # used to be here instead, which silently re-interpreted
+                # the already-UTC value as local time -- a no-op only by
+                # accident, whenever $TZ happened to be unset (as it is
+                # for this script's real cron invocation, but not for a
+                # plain `docker exec`; confirmed both ways empirically).
+                utc = point.time.timestamp()
                 # print(point.latitude, point.longitude, point.speed)
 
                 
