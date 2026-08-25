@@ -277,7 +277,7 @@
         <summary>Setup instructions</summary>
         <ol>
           <li>Install GPSLogger from <a href="https://gpslogger.app/" target="_blank" rel="noopener">gpslogger.app</a> -- it isn't on the Play Store, so this is a direct/sideloaded install.</li>
-          <li>Open the app and sign in with Google when it asks for Drive access -- this is the app's own sign-in, nothing to configure on the server for it.</li>
+          <li>Open the hamburger menu &rarr; <strong>Google Drive</strong> &rarr; <strong>Authorize this app</strong>, sign in with the Google account you want this tied to, and choose the upload folder. Tap <strong>Test upload</strong> -- you should see a "Success" message and a new file appear in that folder.</li>
           <li>Tap the profile name at the top (starts as "Default Profile") &rarr; <strong>From URL</strong>, and paste in:
             <div class="gdrive-current-selection"><code>{{ properties_url }}</code></div>
             Or, if you're reading this page on the phone itself, just tap: <a href="gpslogger://properties/{{ properties_url | urlencode }}">Load this profile directly</a>.
