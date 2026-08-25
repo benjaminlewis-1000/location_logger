@@ -69,6 +69,11 @@ AUTHELIA_URL='https://auth.exploretheworld.tech'
 # than redirecting the whole container's HOME. Same constant/pattern as
 # sync_gdrive_gps.py.
 GDRIVE_HOME = '/data/gdrive_home'
+# Absolute path, not a bare command name -- see sync_gdrive_gps.py's own
+# GDRIVE_BIN comment. These two call sites run under gunicorn rather than
+# cron, so they aren't hit by that specific crash, but they're the exact
+# same fragile pattern, so fixed the same way for consistency.
+GDRIVE_BIN = '/usr/local/bin/gdrive'
 
 
 def _gdrive_env():
@@ -1560,7 +1565,7 @@ class FlaskApp(FlaskView):
         request.files['credentials_tar'].save(fixed_path)
 
         try:
-            result = subprocess.run(['gdrive', 'account', 'import', fixed_path],
+            result = subprocess.run([GDRIVE_BIN, 'account', 'import', fixed_path],
                     capture_output=True, text=True, timeout=60, env=_gdrive_env())
         except subprocess.TimeoutExpired:
             result = subprocess.CompletedProcess([], returncode=1, stdout='', stderr='gdrive command timed out')
@@ -1592,7 +1597,7 @@ class FlaskApp(FlaskView):
                     status=400, mimetype="application/json")
         try:
             result = subprocess.run(
-                    ['gdrive', 'files', 'list',
+                    [GDRIVE_BIN, 'files', 'list',
                      '--query', f"'{parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
                      '--skip-header', '--max', '100', '--field-separator', '|'],
                     capture_output=True, text=True, timeout=30, env=_gdrive_env())
