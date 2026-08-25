@@ -170,6 +170,12 @@
       text-decoration: underline;
     }
 
+    .gdrive-current-selection {
+      margin-bottom: 0.5rem;
+      color: #555;
+      font-size: 0.8rem;
+    }
+
     .gdrive-folder-list {
       max-height: 220px;
       overflow-y: auto;
@@ -255,6 +261,7 @@
         <summary>Choose watched folder</summary>
         <div class="gdrive-browser">
           <div class="gdrive-breadcrumb" id="gdrive-breadcrumb"></div>
+          <div class="gdrive-current-selection">Currently selected path: <strong id="gdrive-current-selected-path">{{ gdrive_folder_path or gdrive_folder_name or 'not set' }}</strong></div>
           <div class="gdrive-folder-list" id="gdrive-folder-list">Loading...</div>
           <div class="gdrive-form-row">
             <button type="button" class="btn" id="gdrive-select-btn">Select this folder</button>
@@ -291,6 +298,7 @@
             applyProgress('ongoing', data.ongoing_done, data.total, data.ongoing_pct);
             applyProgress('backfill', data.backfill_done, data.total, data.backfill_pct);
             document.getElementById('gdrive-folder-name').textContent = data.gdrive_folder_path || data.gdrive_folder_name || 'not set';
+            document.getElementById('gdrive-current-selected-path').textContent = data.gdrive_folder_path || data.gdrive_folder_name || 'not set';
             document.getElementById('gdrive-filename').textContent = data.gdrive_filename || '—';
             document.getElementById('gdrive-last-checked').textContent = fmtEpoch(data.gdrive_last_checked_utc);
             document.getElementById('gdrive-last-changed').textContent = fmtEpoch(data.gdrive_last_changed_utc);
@@ -429,6 +437,7 @@
             if (data.success) {
               showMessage(folderMsg, 'Watching "' + data.folder_path + '".', false);
               document.getElementById('gdrive-folder-name').textContent = data.folder_path;
+              document.getElementById('gdrive-current-selected-path').textContent = data.folder_path;
             } else {
               showMessage(folderMsg, data.error || 'Could not set folder.', true);
             }
