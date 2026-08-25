@@ -31,7 +31,12 @@ database = location_db.locationDB(db_name=config.database_location,
         fips_file=config.county_fips_file,
         country_file=config.country_file)
 
-GDRIVE_BIN = 'gdrive'
+# Absolute path, not a bare command name -- cron invokes this script with
+# PATH=/usr/bin:/bin (confirmed via a real cron-fired crash on prod), which
+# doesn't include /usr/local/bin where gdrive actually lives. A bare
+# 'gdrive' only ever worked in manual/shell invocations that happen to have
+# a fuller PATH.
+GDRIVE_BIN = '/usr/local/bin/gdrive'
 DEST_DIR = '/data/gdrive_data/unprocessed/holding_dir'
 FIELD_SEP = '|'
 
