@@ -31,6 +31,7 @@ from shapely.geometry import mapping, shape
 from shapely.ops import transform as shapely_transform
 import re
 import requests
+import subprocess
 import time
 import xmltodict
 import dateutil.parser
@@ -58,6 +59,20 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 #        return username
 
 AUTHELIA_URL='https://auth.exploretheworld.tech'
+
+# gdrive resolves its account/token storage relative to $HOME/.config
+# (confirmed empirically -- it does NOT respect $XDG_CONFIG_HOME despite
+# that looking like the right lever from the binary's strings output).
+# Left at the container's real HOME (/root), that's outside both bind
+# mounts (/data, /project) and would be wiped on a container recreate --
+# so every gdrive subprocess call overrides just its own env, rather
+# than redirecting the whole container's HOME. Same constant/pattern as
+# sync_gdrive_gps.py.
+GDRIVE_HOME = '/data/gdrive_home'
+
+
+def _gdrive_env():
+    return {**os.environ, 'HOME': GDRIVE_HOME}
 
 def _clean_redirect_target():
     # Build the URL to send Authelia as 'rd', with any existing 'rd'
@@ -1430,6 +1445,92 @@ class FlaskApp(FlaskView):
     def serve_engineering_status(self):
         progress = self.database.get_processing_progress()
         return Response(response=jsonpickle.encode(progress), status=200, mimetype="application/json")
+
+    @route('/upload_gdrive_credentials', methods=['POST'])
+    @authelia_required
+    def upload_gdrive_credentials(self):
+        if 'credentials_tar' not in request.files or not request.files['credentials_tar'].filename:
+            return Response(response=jsonpickle.encode({'success': False, 'error': 'No file selected.'}),
+                    status=400, mimetype="application/json")
+
+        # Fixed, server-controlled path -- never derived from the
+        # client-supplied filename, since this feeds directly into a
+        # subprocess call below. Deleted again immediately after import
+        # either way: it's a one-time-use secret, no reason to leave a
+        # second copy on disk once gdrive has consumed it.
+        os.makedirs('/data/gdrive_config', exist_ok=True)
+        fixed_path = '/data/gdrive_config/uploaded_import.tar'
+        request.files['credentials_tar'].save(fixed_path)
+
+        try:
+            result = subprocess.run(['gdrive', 'account', 'import', fixed_path],
+                    capture_output=True, text=True, timeout=60, env=_gdrive_env())
+        except subprocess.TimeoutExpired:
+            result = subprocess.CompletedProcess([], returncode=1, stdout='', stderr='gdrive command timed out')
+        finally:
+            if os.path.exists(fixed_path):
+                os.remove(fixed_path)
+
+        if result.returncode != 0:
+            return Response(response=jsonpickle.encode({'success': False, 'error': result.stderr.strip() or 'Import failed.'}),
+                    status=400, mimetype="application/json")
+
+        return Response(response=jsonpickle.encode({'success': True, 'message': 'Google Drive credentials imported.'}),
+                status=200, mimetype="application/json")
+
+    @route('/browse_gdrive_folders', methods=['GET'])
+    @authelia_required
+    def browse_gdrive_folders(self):
+        parent = request.args.get('parent') or 'root'
+        # gdrive silently drops --query whenever --parent is also passed
+        # (confirmed empirically -- --parent alone wins, folder-only
+        # filtering never took effect) -- the parent constraint has to be
+        # folded into the query string itself instead, via Drive's own
+        # query syntax. parent is validated first since it feeds
+        # directly into that string: real Drive ids/the 'root' alias are
+        # always plain alphanumeric/-/_, so anything else is rejected
+        # rather than risking it breaking out of the quoted clause.
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', parent):
+            return Response(response=jsonpickle.encode({'success': False, 'error': 'Invalid folder id.'}),
+                    status=400, mimetype="application/json")
+        try:
+            result = subprocess.run(
+                    ['gdrive', 'files', 'list',
+                     '--query', f"'{parent}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                     '--skip-header', '--max', '100', '--field-separator', '|'],
+                    capture_output=True, text=True, timeout=30, env=_gdrive_env())
+        except subprocess.TimeoutExpired:
+            return Response(response=jsonpickle.encode({'success': False, 'error': 'gdrive command timed out.'}),
+                    status=504, mimetype="application/json")
+
+        if result.returncode != 0:
+            return Response(response=jsonpickle.encode({'success': False, 'error': result.stderr.strip() or 'Could not list folders.'}),
+                    status=400, mimetype="application/json")
+
+        folders = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split('|')
+            if len(parts) < 2:
+                continue
+            folders.append({'id': parts[0], 'name': parts[1]})
+
+        return Response(response=jsonpickle.encode({'success': True, 'parent': parent, 'folders': folders}),
+                status=200, mimetype="application/json")
+
+    @route('/set_gdrive_folder', methods=['POST'])
+    @authelia_required
+    def set_gdrive_folder(self):
+        folder_id = request.values.get('folder_id')
+        folder_name = request.values.get('folder_name', '')
+        if not folder_id:
+            return Response(response=jsonpickle.encode({'success': False, 'error': 'No folder specified.'}),
+                    status=400, mimetype="application/json")
+
+        self.database.set_gdrive_folder(folder_id, folder_name)
+        return Response(response=jsonpickle.encode({'success': True, 'folder_id': folder_id, 'folder_name': folder_name}),
+                status=200, mimetype="application/json")
 
 
 # The Add Country form lives in the shared top nav (.country-bar),

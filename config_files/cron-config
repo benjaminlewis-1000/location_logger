@@ -1,3 +1,4 @@
 */15 * * * * bash /etc/periodic/cronjob_15_min.sh
 0 * * * * bash /etc/periodic/cronjob_daily.sh
+*/20 * * * * bash /etc/periodic/cronjob_gdrive_sync.sh
 

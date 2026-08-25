@@ -96,6 +96,99 @@
       text-align: center;
       margin-top: 1.5rem;
     }
+
+    .gdrive-status {
+      font-size: 0.85rem;
+      color: #333;
+      line-height: 1.6;
+      background: #f7f7f7;
+      border-radius: 6px;
+      padding: 0.6rem 0.8rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .gdrive-setup {
+      font-size: 0.85rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .gdrive-setup summary {
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    .gdrive-setup ol {
+      margin: 0.5rem 0 0 1.2rem;
+      padding: 0;
+    }
+
+    .gdrive-form-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .gdrive-form-row .btn {
+      position: static;
+      width: auto;
+      margin: 0;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+
+    .gdrive-message {
+      font-size: 0.8rem;
+      margin-bottom: 0.5rem;
+      min-height: 1.1em;
+    }
+
+    .gdrive-message.error {
+      color: #b00020;
+    }
+
+    .gdrive-message.success {
+      color: #1a7d3a;
+    }
+
+    .gdrive-browser {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 0.6rem 0.8rem;
+      font-size: 0.85rem;
+    }
+
+    .gdrive-breadcrumb {
+      margin-bottom: 0.4rem;
+      color: #555;
+    }
+
+    .gdrive-breadcrumb a {
+      cursor: pointer;
+      color: #1a5fb4;
+      text-decoration: underline;
+    }
+
+    .gdrive-folder-list {
+      max-height: 220px;
+      overflow-y: auto;
+      margin-bottom: 0.5rem;
+    }
+
+    .gdrive-folder-row {
+      padding: 4px 6px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    .gdrive-folder-row:hover {
+      background: #eef3fb;
+    }
+
+    .gdrive-folder-row.selected-current {
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
@@ -130,6 +223,47 @@
       </div>
     </div>
 
+    <div class="progress-block">
+      <h2>Google Drive sync (ongoing GPS data)</h2>
+
+      <div class="gdrive-status">
+        <div>Watched folder: <strong id="gdrive-folder-name">{{ gdrive_folder_name or 'not set' }}</strong></div>
+        <div>Last file checked: <span id="gdrive-filename">{{ gdrive_filename or '—' }}</span></div>
+        <div>Last checked: <span id="gdrive-last-checked">—</span></div>
+        <div>Last new content pulled: <span id="gdrive-last-changed">—</span></div>
+      </div>
+
+      <details class="gdrive-setup">
+        <summary>Setup instructions</summary>
+        <ol>
+          <li>Install the <code>gdrive</code> CLI (<a href="https://github.com/glotlabs/gdrive" target="_blank" rel="noopener">glotlabs/gdrive</a>) on any machine -- doesn't need to be this server.</li>
+          <li>Run <code>gdrive account add</code> and complete the Google login in your browser.</li>
+          <li>Run <code>gdrive account export</code> to produce a <code>.tar</code> file.</li>
+          <li>Upload that file below, then pick the Drive folder to watch.</li>
+        </ol>
+      </details>
+
+      <form id="gdrive-upload-form">
+        <div class="gdrive-form-row">
+          <input type="file" id="gdrive-credentials-file" name="credentials_tar" accept=".tar">
+          <button type="submit" class="btn">Upload credentials</button>
+        </div>
+      </form>
+      <div id="gdrive-upload-message" class="gdrive-message"></div>
+
+      <details class="gdrive-setup" id="gdrive-browser-details">
+        <summary>Choose watched folder</summary>
+        <div class="gdrive-browser">
+          <div class="gdrive-breadcrumb" id="gdrive-breadcrumb"></div>
+          <div class="gdrive-folder-list" id="gdrive-folder-list">Loading...</div>
+          <div class="gdrive-form-row">
+            <button type="button" class="btn" id="gdrive-select-btn">Select this folder</button>
+          </div>
+        </div>
+        <div id="gdrive-folder-message" class="gdrive-message"></div>
+      </details>
+    </div>
+
     <div class="stale-note" id="last-updated">Updated just now</div>
   </div>
 
@@ -145,12 +279,21 @@
         document.getElementById(prefix + '-pct').textContent = pct.toFixed(1) + '%';
       }
 
+      function fmtEpoch(epochSeconds) {
+        if (!epochSeconds) return '—';
+        return new Date(epochSeconds * 1000).toLocaleString();
+      }
+
       function poll() {
         fetch('/engineering_status', {credentials: 'same-origin'})
           .then(function(resp) { return resp.json(); })
           .then(function(data) {
             applyProgress('ongoing', data.ongoing_done, data.total, data.ongoing_pct);
             applyProgress('backfill', data.backfill_done, data.total, data.backfill_pct);
+            document.getElementById('gdrive-folder-name').textContent = data.gdrive_folder_name || 'not set';
+            document.getElementById('gdrive-filename').textContent = data.gdrive_filename || '—';
+            document.getElementById('gdrive-last-checked').textContent = fmtEpoch(data.gdrive_last_checked_utc);
+            document.getElementById('gdrive-last-changed').textContent = fmtEpoch(data.gdrive_last_changed_utc);
             document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
           })
           .catch(function(err) {
@@ -160,6 +303,138 @@
       }
 
       setInterval(poll, 5000);
+
+      // --- Google Drive credentials upload ---
+      var uploadForm = document.getElementById('gdrive-upload-form');
+      var uploadMsg = document.getElementById('gdrive-upload-message');
+      var uploadMsgTimer = null;
+
+      function showMessage(el, text, isError) {
+        el.textContent = text;
+        el.className = 'gdrive-message ' + (isError ? 'error' : 'success');
+      }
+
+      uploadForm.addEventListener('submit', function(evt) {
+        evt.preventDefault();
+        var fileInput = document.getElementById('gdrive-credentials-file');
+        if (!fileInput.files.length) {
+          showMessage(uploadMsg, 'Choose a .tar file first.', true);
+          return;
+        }
+        var formData = new FormData();
+        formData.append('credentials_tar', fileInput.files[0]);
+
+        if (uploadMsgTimer) clearTimeout(uploadMsgTimer);
+        showMessage(uploadMsg, 'Uploading...', false);
+
+        fetch('/upload_gdrive_credentials', {method: 'POST', credentials: 'same-origin', body: formData})
+          .then(function(resp) { return resp.json(); })
+          .then(function(data) {
+            if (data.success) {
+              showMessage(uploadMsg, data.message || 'Uploaded.', false);
+              fileInput.value = '';
+              uploadMsgTimer = setTimeout(function() { uploadMsg.textContent = ''; }, 5000);
+            } else {
+              showMessage(uploadMsg, data.error || 'Upload failed.', true);
+            }
+          })
+          .catch(function(err) {
+            showMessage(uploadMsg, 'Upload failed: ' + err, true);
+          });
+      });
+
+      // --- Google Drive folder browser ---
+      var browserDetails = document.getElementById('gdrive-browser-details');
+      var breadcrumbEl = document.getElementById('gdrive-breadcrumb');
+      var folderListEl = document.getElementById('gdrive-folder-list');
+      var selectBtn = document.getElementById('gdrive-select-btn');
+      var folderMsg = document.getElementById('gdrive-folder-message');
+      var browserLoaded = false;
+      // Breadcrumb trail; 'root' has no display name of its own.
+      var trail = [{id: 'root', name: 'My Drive'}];
+
+      function renderBreadcrumb() {
+        breadcrumbEl.innerHTML = '';
+        trail.forEach(function(node, idx) {
+          if (idx > 0) breadcrumbEl.appendChild(document.createTextNode(' / '));
+          if (idx === trail.length - 1) {
+            var span = document.createElement('span');
+            span.textContent = node.name;
+            breadcrumbEl.appendChild(span);
+          } else {
+            var a = document.createElement('a');
+            a.textContent = node.name;
+            a.addEventListener('click', function() {
+              trail = trail.slice(0, idx + 1);
+              loadFolders(node.id);
+            });
+            breadcrumbEl.appendChild(a);
+          }
+        });
+      }
+
+      function loadFolders(parentId) {
+        folderListEl.textContent = 'Loading...';
+        fetch('/browse_gdrive_folders?parent=' + encodeURIComponent(parentId), {credentials: 'same-origin'})
+          .then(function(resp) { return resp.json(); })
+          .then(function(data) {
+            if (!data.success) {
+              folderListEl.textContent = '';
+              showMessage(folderMsg, data.error || 'Could not list folders.', true);
+              return;
+            }
+            folderMsg.textContent = '';
+            renderBreadcrumb();
+            folderListEl.innerHTML = '';
+            if (!data.folders.length) {
+              folderListEl.textContent = '(no subfolders here)';
+              return;
+            }
+            data.folders.forEach(function(folder) {
+              var row = document.createElement('div');
+              row.className = 'gdrive-folder-row';
+              row.textContent = '📁 ' + folder.name;
+              row.addEventListener('click', function() {
+                trail.push({id: folder.id, name: folder.name});
+                loadFolders(folder.id);
+              });
+              folderListEl.appendChild(row);
+            });
+          })
+          .catch(function(err) {
+            folderListEl.textContent = '';
+            showMessage(folderMsg, 'Could not list folders: ' + err, true);
+          });
+      }
+
+      browserDetails.addEventListener('toggle', function() {
+        if (browserDetails.open && !browserLoaded) {
+          browserLoaded = true;
+          renderBreadcrumb();
+          loadFolders('root');
+        }
+      });
+
+      selectBtn.addEventListener('click', function() {
+        var current = trail[trail.length - 1];
+        var formData = new URLSearchParams();
+        formData.append('folder_id', current.id);
+        formData.append('folder_name', current.name);
+
+        fetch('/set_gdrive_folder', {method: 'POST', credentials: 'same-origin', body: formData})
+          .then(function(resp) { return resp.json(); })
+          .then(function(data) {
+            if (data.success) {
+              showMessage(folderMsg, 'Watching "' + data.folder_name + '".', false);
+              document.getElementById('gdrive-folder-name').textContent = data.folder_name;
+            } else {
+              showMessage(folderMsg, data.error || 'Could not set folder.', true);
+            }
+          })
+          .catch(function(err) {
+            showMessage(folderMsg, 'Could not set folder: ' + err, true);
+          });
+      });
     })();
   </script>
 </body>
