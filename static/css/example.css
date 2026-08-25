@@ -64,10 +64,9 @@
 
 .btn {
     position: relative;
-    width: 90px;
     display: block;
     background: dodgerblue;
-    padding: 10px;
+    padding: 10px 14px;
     text-align: center;
     border-radius: 5px;
     color: white;
@@ -75,6 +74,7 @@
     line-height: 15px;
     margin: 5px 5px 5px 5px;
     text-decoration: none;
+    white-space: nowrap;
 }
 
 .btn:hover {
