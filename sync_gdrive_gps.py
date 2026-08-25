@@ -55,11 +55,16 @@ def _run(args, timeout=60):
 
 
 def list_files(folder_id):
+    # None (call failed) is distinct from [] (call succeeded, folder is
+    # genuinely empty) -- main() only records a successful check cycle
+    # when the call itself succeeded, not on a real failure (e.g. no
+    # account configured), so an ongoing problem doesn't get masked by
+    # a fresh-looking "Last checked" time.
     result = _run(['files', 'list', '--parent', folder_id, '--skip-header',
             '--max', '100', '--field-separator', FIELD_SEP])
     if result.returncode != 0:
         print(f"gdrive files list failed: {result.stderr.strip()}")
-        return []
+        return None
 
     files = []
     for line in result.stdout.splitlines():
@@ -102,6 +107,12 @@ def main():
         return
 
     files = list_files(folder['folder_id'])
+    if files is None:
+        print("Could not check the watched Drive folder -- see error above.")
+        return
+
+    database.record_gdrive_run()
+
     if not files:
         print(f"No files found in the watched Drive folder ({folder.get('folder_name')}).")
         return
