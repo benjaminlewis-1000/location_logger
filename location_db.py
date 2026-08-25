@@ -897,18 +897,18 @@ class locationDB:
         # flag actually drove this query -- CountyAdder's pandas-side
         # unprocessed-filter checks that column by that fixed name
         # regardless of mode.
-        relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, column, pc.accuracy) \
+        relevant_data_query = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, column, pc.accuracy, pc.altitude) \
             .where(pc.utc_time >= min_cmp) \
             .order_by(pc.utc_time.asc())
 
         if num_points is not None:
             # Limit the amount of data.
             relevant_data_query = relevant_data_query.limit(num_points)
-            
+
         data = self.conn.execute(relevant_data_query)
 
         data = data.fetchall()
-        data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc', 'accuracy'])
+        data = pd.DataFrame(data, columns=['id', 'datetime', 'utc', 'lat', 'lon', 'county_proc', 'accuracy', 'altitude'])
 
         return data
 
