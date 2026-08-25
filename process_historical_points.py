@@ -124,7 +124,7 @@ def commit_and_report():
         print(f"  {source_file}: {name}, {state} ({fips}) -- {year}")
     if flagged:
         print("\nReview the flagged list above. To approve one, run:")
-        print("  database.record_county_visit_year(fips, year)")
+        print("  database.set_visited_county((fips, year))")
 
 
 def main():

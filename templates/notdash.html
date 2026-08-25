@@ -652,7 +652,20 @@
         // domain changes are not) -- Plotly.react with a full new
         // layout is the documented way to handle that kind of
         // structural change.
-        var newLayout = JSON.parse(JSON.stringify(graphs.layout));
+        //
+        // Sourced from chartDiv.data/.layout (Plotly's own live state
+        // for this div, kept in sync after every restyle/relayout/
+        // update call), not the frozen `graphs` snapshot from initial
+        // page load -- graphs.data/.layout never change after that
+        // first render, so react()'ing with them would silently
+        // discard anything applied since, e.g. the county-hover
+        // customdata/hovertemplate restyle and the year-slider's
+        // coloraxis updates. This was the actual bug behind hover
+        // working on the AK/HI insets (whose domain changes here force
+        // Plotly to rebuild them from its own current internal state)
+        // but not the main map (whose domain doesn't change here, so
+        // react() was overwriting its trace straight from stale data).
+        var newLayout = JSON.parse(JSON.stringify(chartDiv.layout));
 
         // Continental map: left at its server-set zoom (3) and full
         // domain -- it's not being fit to a bounding box, so there's
@@ -682,7 +695,7 @@
           newLayout[inset.key].zoom = fitZoom(inset.bounds, squarePx, squarePx, 0.45);
         });
 
-        return Plotly.react('chart', graphs.data, newLayout, config);
+        return Plotly.react('chart', chartDiv.data, newLayout, config);
       }
 
       // Serialize every refit through one promise chain -- calling
@@ -845,7 +858,16 @@
         var hoverTraceIndices = [];
         var customdataUpdate = [];
         graphs.data.forEach(function(trace, idx) {
-          if (!trace.locations) return;
+          // Skip the state-boundary overlay trace (hoverinfo:'skip',
+          // added deliberately so it can't swallow county hover -- see
+          // serve_county_graph). Restyling it with a real hovertemplate
+          // anyway re-enables its hover despite hoverinfo:'skip', and
+          // since it's the topmost trace covering the whole map with
+          // blank customdata (its locations are state codes, never
+          // matched in countyHoverText), it wins hover almost
+          // everywhere -- the actual bug behind "only a few counties
+          // have tooltips, and they swallow the mouseover around them."
+          if (!trace.locations || trace.hoverinfo === 'skip') return;
           hoverTraceIndices.push(idx);
           customdataUpdate.push(trace.locations.map(function(fips) {
             return countyHoverText[fips] || '';

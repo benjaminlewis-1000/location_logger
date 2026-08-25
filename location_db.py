@@ -106,6 +106,38 @@ class locationDB:
                 Column('fips', String, nullable=True),
             )
 
+        # Single-row settings table for the in-container Google Drive sync
+        # (sync_gdrive_gps.py) -- which folder to watch. A DB row rather
+        # than a config.py constant since it's meant to be changeable from
+        # the /engineering folder-browser UI, not a fixed value.
+        self.gdrive_settings = Table('gdrive_settings', metadata,
+                Column('id', Integer, primary_key=True),
+                Column('folder_id', String),
+                Column('folder_name', String),
+                Column('folder_path', String),
+                # Set on every successful check cycle, regardless of
+                # whether any file was found -- distinct from
+                # gdrive_sync_state's per-file timestamps, which only
+                # advance when a file actually gets listed. Without this,
+                # "Last checked" on /engineering goes stale during any
+                # stretch where the watched folder is legitimately empty
+                # (e.g. the old external script swept it first), even
+                # though the sync is running correctly on schedule.
+                Column('last_run_utc', Float),
+            )
+
+        # Per-file content-hash tracking for the same sync -- replaces the
+        # old external script's "move the file on Drive once handled"
+        # approach, which isn't safe once more than one environment polls
+        # the same Drive folder independently. See sync_gdrive_gps.py.
+        self.gdrive_sync_state = Table('gdrive_sync_state', metadata,
+                Column('file_id', String, primary_key=True),
+                Column('filename', String),
+                Column('last_md5', String),
+                Column('last_checked_utc', Float),
+                Column('last_changed_utc', Float),
+            )
+
         if not database_exists(self.engine.url):
             metadata.create_all(self.engine)        
 
@@ -145,6 +177,28 @@ class locationDB:
                     with self.engine.begin() as conn2:
                         conn2.execute(text(sql_insert))
                         conn2.commit()
+
+            exist_gs = insp.has_table("gdrive_settings")
+            if not exist_gs:
+                print("Need to add gdrive_settings table")
+                metadata.create_all(self.engine)
+            else:
+                gs_columns = [c['name'] for c in insp.get_columns('gdrive_settings')]
+                if 'folder_path' not in gs_columns:
+                    sql_insert = 'alter table gdrive_settings add column folder_path VARCHAR'
+                    with self.engine.begin() as conn2:
+                        conn2.execute(text(sql_insert))
+                        conn2.commit()
+                if 'last_run_utc' not in gs_columns:
+                    sql_insert = 'alter table gdrive_settings add column last_run_utc FLOAT'
+                    with self.engine.begin() as conn2:
+                        conn2.execute(text(sql_insert))
+                        conn2.commit()
+
+            exist_gss = insp.has_table("gdrive_sync_state")
+            if not exist_gss:
+                print("Need to add gdrive_sync_state table")
+                metadata.create_all(self.engine)
 
             # Check that the table has a 'county_computed' field
             columns = insp.get_columns('positions')
@@ -670,13 +724,98 @@ class locationDB:
         ongoing_pct = round(100 * ongoing_done / total, 1) if total else 0.0
         backfill_pct = round(100 * backfill_done / total, 1) if total else 0.0
 
+        gs = self.conn.execute(select(self.gdrive_settings).where(self.gdrive_settings.c.id == 1)).fetchone()
+        gdrive_folder_name = gs.folder_name if gs else None
+        gdrive_folder_path = gs.folder_path if gs else None
+        # "Last checked" -- when the script last successfully talked to
+        # Drive at all, regardless of what it found. Deliberately NOT
+        # derived from gdrive_sync_state (see record_gdrive_run's
+        # docstring) -- that only advances per-file, so it goes stale
+        # during any stretch where the watched folder is legitimately
+        # empty even though the sync itself is running fine.
+        gdrive_last_checked_utc = gs.last_run_utc if gs else None
+
+        # "Last file checked" -- whichever row was checked most recently,
+        # by design (a name to go with gdrive_last_checked_utc above).
+        latest = self.conn.execute(
+                select(self.gdrive_sync_state)
+                .order_by(self.gdrive_sync_state.c.last_checked_utc.desc())
+                .limit(1)).fetchone()
+
+        # "Last new content pulled" needs its own independent MAX, not
+        # latest's own last_changed_utc -- those aren't the same row
+        # whenever the most-recently-*checked* file happens to be a
+        # different, unchanged one from whichever file most recently
+        # actually changed (confirmed for real: an unchanged file
+        # checked a couple seconds after a genuinely new one sorted
+        # first and hid the real change behind a stale timestamp).
+        max_changed = self.conn.execute(
+                select(func.max(self.gdrive_sync_state.c.last_changed_utc))).scalar()
+
         return {
             'total': total,
             'ongoing_done': ongoing_done,
             'ongoing_pct': ongoing_pct,
             'backfill_done': backfill_done,
             'backfill_pct': backfill_pct,
+            'gdrive_folder_name': gdrive_folder_name,
+            'gdrive_folder_path': gdrive_folder_path,
+            'gdrive_filename': latest.filename if latest else None,
+            'gdrive_last_checked_utc': gdrive_last_checked_utc,
+            'gdrive_last_changed_utc': max_changed,
         }
+
+    def get_gdrive_folder(self):
+        row = self.conn.execute(select(self.gdrive_settings).where(self.gdrive_settings.c.id == 1)).fetchone()
+        if row is None:
+            return None
+        return {'folder_id': row.folder_id, 'folder_name': row.folder_name, 'folder_path': row.folder_path}
+
+    def set_gdrive_folder(self, folder_id: str, folder_name: str, folder_path: str = None):
+        exists = self.conn.execute(select(self.gdrive_settings.c.id).where(self.gdrive_settings.c.id == 1)).fetchone()
+        if exists is None:
+            self.conn.execute(self.gdrive_settings.insert().values(
+                id=1, folder_id=folder_id, folder_name=folder_name, folder_path=folder_path))
+        else:
+            self.conn.execute(self.gdrive_settings.update().where(self.gdrive_settings.c.id == 1)
+                    .values(folder_id=folder_id, folder_name=folder_name, folder_path=folder_path))
+        self.conn.commit()
+
+    def record_gdrive_run(self):
+        # Called once per successful check cycle (i.e. the Drive listing
+        # call itself succeeded), regardless of whether any file was
+        # found or changed -- distinct from record_gdrive_check, which
+        # is per-file and only fires when a file is actually listed. A
+        # folder must already be configured (set_gdrive_folder) for this
+        # row to exist, since sync_gdrive_gps.py's main() never reaches
+        # this call otherwise -- so an update-only path is enough here,
+        # no insert-if-absent branch needed.
+        self.conn.execute(self.gdrive_settings.update().where(self.gdrive_settings.c.id == 1)
+                .values(last_run_utc=time.time()))
+        self.conn.commit()
+
+    def get_gdrive_sync_state(self, file_id: str):
+        row = self.conn.execute(select(self.gdrive_sync_state).where(self.gdrive_sync_state.c.file_id == file_id)).fetchone()
+        if row is None:
+            return None
+        return {'file_id': row.file_id, 'filename': row.filename, 'last_md5': row.last_md5,
+                'last_checked_utc': row.last_checked_utc, 'last_changed_utc': row.last_changed_utc}
+
+    def record_gdrive_check(self, file_id: str, filename: str, md5: str, changed: bool):
+        now = time.time()
+        exists = self.conn.execute(
+                select(self.gdrive_sync_state.c.file_id).where(self.gdrive_sync_state.c.file_id == file_id)).fetchone()
+        values = {'filename': filename, 'last_md5': md5, 'last_checked_utc': now}
+        if changed:
+            values['last_changed_utc'] = now
+        if exists is None:
+            insert_values = {'file_id': file_id, 'last_checked_utc': now, 'last_changed_utc': now if changed else None,
+                    'filename': filename, 'last_md5': md5}
+            self.conn.execute(self.gdrive_sync_state.insert().values(**insert_values))
+        else:
+            self.conn.execute(self.gdrive_sync_state.update()
+                    .where(self.gdrive_sync_state.c.file_id == file_id).values(**values))
+        self.conn.commit()
 
     def get_num_counties_visited(self):
         visited = select(self.us_counties.c).where(self.us_counties.c.visited == True)

@@ -12,6 +12,19 @@ else
     echo "APP_ENV=dev -- skipping cron startup"
 fi
 
+# Dev-only convenience, separate from the cron gate above: the Google
+# Drive sync (sync_gdrive_gps.py) is exercised against real data here at
+# a real, frequent cadence, rather than staying dormant like the other
+# two cron jobs. Additive -- doesn't touch the cron daemon or those two
+# jobs' own dev-off behavior. Prod gets this job through the normal
+# cron-config entry instead, once cut over.
+if [ "$APP_ENV" = "dev" ]; then
+    ( while true; do
+        /usr/local/bin/python /project/sync_gdrive_gps.py
+        sleep 900
+    done ) &
+fi
+
 while true; do
     sleep 10
 done
