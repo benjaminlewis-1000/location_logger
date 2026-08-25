@@ -1,20 +1,20 @@
 services:
 
    # Note: On the Cloudflare zero trust dashboard, this app
-   # has a hostname of dev_owntracks.exploretheworld.tech, and is
-   # running as service http://location_track_dev:5000, since the
-   # container name is location_track_dev and the default port is
+   # has a hostname of owntracks.exploretheworld.tech, and is
+   # running as service http://location_track:5000, since the
+   # container name is location_track and the default port is
    # 5000. It is also on the same docker network, traefik_proxy,
    # as the cloudflared container.
-   location_track_dev:
+   location_track:
     build:
       context: .
       dockerfile: config_files/Dockerfile
       args:
         buildno: 1
     image:
-      location_dev_img
-    container_name: location_track_dev
+      location_img
+    container_name: location_track
     external_links:
       - cloudflared-tunnel
     env_file:
@@ -23,14 +23,13 @@ services:
       sh  /project/config_files/startup.sh
     volumes:
       - '/app/node_modules'
-      - /mnt/fast_storage/appdata/location_tracks_dev:/data
-      - /home/benjamin/docker_via_tunnels/dev_location_track/:/project
+      - /mnt/fast_storage/appdata/location_tracks:/data
+      - /home/benjamin/docker_via_tunnels/location_track/:/project
     networks:
       - traefik_proxy
     restart: always
     environment:
       - TZ=America/New_York
-      - APP_ENV=dev
 
 networks:
   default:

@@ -188,7 +188,6 @@ cors = CORS(app, resources={r"/foo": {"origins": "*"}})
 # SESSION_TYPE = 'redis'
 app.config.from_object(__name__)
 app.config['CORS_HEADERS'] = 'Content-Type'
-app.config['TEMPLATES_AUTO_RELOAD'] = True
 gmap_key = os.environ['GMAP_API_KEY']
 app.config['GOOGLEMAPS_KEY'] = gmap_key
 app.config['UPLOAD_FOLDER'] = "/data"
