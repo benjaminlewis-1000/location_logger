@@ -288,7 +288,7 @@
 
       function fmtEpoch(epochSeconds) {
         if (!epochSeconds) return '—';
-        return new Date(epochSeconds * 1000).toLocaleString();
+        return new Date(epochSeconds * 1000).toLocaleString(undefined, {timeZoneName: 'short'});
       }
 
       function poll() {
