@@ -289,8 +289,13 @@ def _format_year_ranges(years):
 def _build_route_summary(route, scope_label):
     # route: location_db.get_unvisited_route(scope)'s return value (a
     # dict, or None if compute_unvisited_routes.py hasn't reached this
-    # scope yet -- distinct from a real 0-unvisited row).
-    if route is None:
+    # scope yet -- distinct from a real 0-unvisited row). num_counties
+    # can also be None on a real row whose full_tour_* was seeded (e.g.
+    # copied from another environment) before its own daily columns were
+    # ever computed -- treat that the same as "not ready yet", not as
+    # the 0-unvisited case (None == 0 is False, but leaving this
+    # unhandled crashes formatting distance_miles, also still None here).
+    if route is None or route['num_counties'] is None:
         return None
     if route['num_counties'] == 0:
         return f"You've visited every county in {scope_label}!"
