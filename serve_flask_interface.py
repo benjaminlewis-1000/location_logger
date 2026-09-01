@@ -285,6 +285,21 @@ def _format_year_ranges(years):
     ranges.append(f'{start}-{prev}' if start != prev else f'{start}')
     return ', '.join(ranges)
 
+
+def _build_route_summary(route, scope_label):
+    # route: location_db.get_unvisited_route(scope)'s return value (a
+    # dict, or None if compute_unvisited_routes.py hasn't reached this
+    # scope yet -- distinct from a real 0-unvisited row).
+    if route is None:
+        return None
+    if route['num_counties'] == 0:
+        return f"You've visited every county in {scope_label}!"
+    plural = 'county' if route['num_counties'] == 1 else 'counties'
+    summary = f"Suggested loop through {route['num_counties']} unvisited {plural}: {route['distance_miles']:,.0f} mi"
+    if route['full_tour_distance_miles'] is not None:
+        summary += f" (touring all of {scope_label} from scratch: {route['full_tour_distance_miles']:,.0f} mi)"
+    return summary
+
 load_dotenv()
 
 cors = CORS(app, resources={r"/foo": {"origins": "*"}})
@@ -295,6 +310,30 @@ gmap_key = os.environ['GMAP_API_KEY']
 app.config['GOOGLEMAPS_KEY'] = gmap_key
 app.config['UPLOAD_FOLDER'] = "/data"
 GoogleMaps(app)
+
+# CARTO's raster basemap CDN (used for every Choroplethmapbox subplot's
+# background) started requiring an API key in August 2026, watermarking
+# ("API KEY REQUIRED") any unauthenticated tile request instead of hard
+# blocking it -- confirmed directly against a real tile before this was
+# added. Free under CARTO's fair-use tier (carto.com/basemaps/apikey).
+# The plain style='carto-positron' shortcut has no way to carry a key, so
+# this switches to a blank style='white-bg' base plus a custom raster
+# `layers` entry with the key baked into the tile URL -- see
+# _carto_raster_layer() and its call sites.
+carto_api_key = os.environ['CARTO_API_KEY']
+CARTO_TILE_URL = 'https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=' + carto_api_key
+
+
+def _carto_raster_layer():
+    # A fresh list/dict per call (not a shared module-level constant) --
+    # this is passed into several independent mapbox subplot layouts per
+    # request, and there's no reason for them to alias the same objects.
+    return [dict(
+            below='traces',
+            sourcetype='raster',
+            sourceattribution='© CARTO, © OpenStreetMap contributors',
+            source=[CARTO_TILE_URL],
+        )]
 
 class FlaskApp(FlaskView):
     route_base = '/'
@@ -336,12 +375,12 @@ class FlaskApp(FlaskView):
         ak_fit_gdf = ak_gdf[ak_gdf['NAME'] != 'Aleutians West']
         cls.ak_bounds = tuple(ak_fit_gdf.total_bounds)
         cls.hi_bounds = tuple(counties_gdf[counties_gdf['GEO_ID'].str.startswith('15')].total_bounds)
-        # 02/15 = AK/HI (their own insets); 72/78/66/60/69 = Puerto
-        # Rico/Virgin Islands/Guam/American Samoa/Northern Mariana --
-        # present in the county data and otherwise drags the "fit the
-        # continental US" bounds far south/east.
-        non_conti_fips = ['02', '15', '72', '78', '66', '60', '69']
-        is_conti = ~counties_gdf['GEO_ID'].str[:2].isin(non_conti_fips)
+        # AK/HI (their own insets) + territories -- present in the county
+        # data and otherwise drags the "fit the continental US" bounds far
+        # south/east. Shared with compute_unvisited_routes.py's mainland
+        # scope via config.non_continental_fips_prefixes, so "mainland"
+        # means the same thing everywhere in the app.
+        is_conti = ~counties_gdf['GEO_ID'].str[:2].isin(config.non_continental_fips_prefixes)
         cls.conti_bounds = tuple(counties_gdf[is_conti].total_bounds)
 
         cls.database = location_db.locationDB(db_name=config.database_location, \
@@ -455,7 +494,8 @@ class FlaskApp(FlaskView):
 
         return dict(
                 mapbox=dict(
-                        style='carto-positron',
+                        style='white-bg',
+                        layers=_carto_raster_layer(),
                         center=dict(lat=39.5, lon=-98.35),
                         zoom=3.3,
                         domain=dict(x=[0, 1], y=[0, 1]),
@@ -463,14 +503,16 @@ class FlaskApp(FlaskView):
                 # Small insets in the bottom-left corner, same spot
                 # the usual USA-map convention places them.
                 mapbox2=dict(
-                        style='carto-positron',
+                        style='white-bg',
+                        layers=_carto_raster_layer(),
                         center=ak_center,
                         zoom=ak_zoom,
                         domain=ak_domain,
                         bounds=ak_pan_bounds,
                     ),
                 mapbox3=dict(
-                        style='carto-positron',
+                        style='white-bg',
+                        layers=_carto_raster_layer(),
                         center=hi_center,
                         zoom=hi_zoom,
                         domain=hi_domain,
@@ -687,12 +729,16 @@ class FlaskApp(FlaskView):
 
         state_urls = self._compute_table(county_df)
 
+        route = self.database.get_unvisited_route(state_code)
+        route_summary = _build_route_summary(route, state_name)
+
         return render_template('notdash.html', \
                                graphJSON=graphJSON, \
                                stat_string=visit_string, \
                                title=state_name,
                                page_title=f"OwnTracks - State View: {state_name}",
-                               more_html=state_urls)
+                               more_html=state_urls,
+                               route_summary=route_summary)
 
     @route('/counties')
     @authelia_required
@@ -786,13 +832,17 @@ class FlaskApp(FlaskView):
                 'countyHoverText': county_hover_text,
             })
 
+        route = self.database.get_unvisited_route('MAINLAND')
+        route_summary = _build_route_summary(route, 'the continental US')
+
         return render_template('notdash.html',
                 graphJSON=self.template,
                 stat_string=visited_string,
                 title='Visited Counties',
                 page_title='OwnTracks - Visited Counties',
                 full_bleed_map=True,
-                mapbox_bounds_json=mapbox_bounds_json)
+                mapbox_bounds_json=mapbox_bounds_json,
+                route_summary=route_summary)
         # return "<h1>This is my indexpage2</h1>"
 
     @route('/log_country', methods=['POST', 'GET'])
@@ -956,9 +1006,9 @@ class FlaskApp(FlaskView):
         # mode='markers' (a plain circle), not marker(symbol='star') or
         # mode='text' with a star glyph -- both were tried and neither
         # actually showed up on screen. symbol='star' needs Mapbox's
-        # hosted icon sprites, which needs an access token this app
-        # doesn't have (it deliberately uses the free, tokenless
-        # carto-positron style). mode='text' compiles to a mapbox-gl
+        # hosted icon sprites, which needs a Mapbox access token this app
+        # deliberately doesn't have (it uses a CARTO raster basemap
+        # instead -- see _carto_raster_layer()). mode='text' compiles to a mapbox-gl
         # *symbol* layer, which has collision detection *on* by
         # default -- if it decides the glyph would overlap the
         # basemap's own labels (a city name, a sea label, etc.) at
@@ -992,7 +1042,8 @@ class FlaskApp(FlaskView):
         fig.update_layout(
                 coloraxis=dict(colorscale=colorscale, showscale=False),
                 mapbox=dict(
-                        style='carto-positron',
+                        style='white-bg',
+                        layers=_carto_raster_layer(),
                         center=dict(lat=20, lon=0),
                         # A fixed, eyeballed default (like the
                         # continental US subplot's zoom=3.3) rather

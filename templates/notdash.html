@@ -239,6 +239,12 @@
       text-overflow: ellipsis;
     }
 
+    .route-summary {
+      margin-top: 0.15rem;
+      font-size: 0.85rem;
+      color: #666;
+    }
+
     #chart {
       width: 100%;
       height: 55vh;
@@ -508,6 +514,9 @@
   <!-- Title: one clean text line -->
   <div class="title-bar">
     <h1>{{title}} {{stat_string}}<span id="displayedCount"></span></h1>
+    {% if route_summary %}
+    <div class="route-summary">{{ route_summary }}</div>
+    {% endif %}
   </div>
 
   <!-- Year slider: "Up to" (cumulative, visited by year X) or "Only"

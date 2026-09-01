@@ -26,4 +26,4 @@ scikit-learn
 fiona==1.10.1
 xmltodict
 Flask-HTTPAuth
-ortools
+ortools==9.15.6755
