@@ -9,6 +9,7 @@ from sqlalchemy_utils import database_exists, create_database
 import csv
 import dateutil
 import dateutil.parser
+import json
 import math
 import numpy as np
 import pandas as pd
@@ -138,6 +139,24 @@ class locationDB:
                 Column('last_changed_utc', Float),
             )
 
+        # Cached daily-precomputed "suggested loop through unvisited
+        # counties" per scope (state abbrev, or 'MAINLAND') -- see
+        # compute_unvisited_routes.py / CLAUDE.md. One row per scope,
+        # holding both the daily-refreshed unvisited-only tour and the
+        # one-time full-scope comparison tour (full_tour_* -- NULL until
+        # that scope's one-time computation has run) side by side.
+        self.unvisited_routes = Table('unvisited_routes', metadata,
+                Column('scope', String, primary_key=True),
+                Column('county_order', String),
+                Column('distance_miles', Float),
+                Column('num_counties', Integer),
+                Column('unvisited_fips', String),
+                Column('computed_utc', Float),
+                Column('full_tour_distance_miles', Float, nullable=True),
+                Column('full_tour_county_order', String, nullable=True),
+                Column('full_tour_computed_utc', Float, nullable=True),
+            )
+
         if not database_exists(self.engine.url):
             metadata.create_all(self.engine)        
 
@@ -198,6 +217,11 @@ class locationDB:
             exist_gss = insp.has_table("gdrive_sync_state")
             if not exist_gss:
                 print("Need to add gdrive_sync_state table")
+                metadata.create_all(self.engine)
+
+            exist_ur = insp.has_table("unvisited_routes")
+            if not exist_ur:
+                print("Need to add unvisited_routes table")
                 metadata.create_all(self.engine)
 
             # Check that the table has a 'county_computed' field
@@ -550,6 +574,62 @@ class locationDB:
         for state, year in result:
             years_by_state.setdefault(state, []).append(year)
         return years_by_state
+
+    def get_unvisited_route(self, scope: str):
+        # Returns None if compute_unvisited_routes.py hasn't reached this
+        # scope yet -- distinct from a real 0-unvisited row (num_counties
+        # == 0), which the caller should render as a completion message,
+        # not treat the same as "no data".
+        query = select(self.unvisited_routes).where(self.unvisited_routes.c.scope == scope)
+        result = self.conn.execute(query).fetchone()
+        if result is None:
+            return None
+        row = result._mapping
+        return {
+            'scope': row['scope'],
+            'county_order': json.loads(row['county_order']) if row['county_order'] else [],
+            'distance_miles': row['distance_miles'],
+            'num_counties': row['num_counties'],
+            'unvisited_fips': json.loads(row['unvisited_fips']) if row['unvisited_fips'] else [],
+            'computed_utc': row['computed_utc'],
+            'full_tour_distance_miles': row['full_tour_distance_miles'],
+            'full_tour_county_order': json.loads(row['full_tour_county_order']) if row['full_tour_county_order'] else None,
+            'full_tour_computed_utc': row['full_tour_computed_utc'],
+        }
+
+    def save_unvisited_route(self, scope: str, county_order: list, distance_miles: float, unvisited_fips: list):
+        # UPDATE-or-INSERT, not delete-then-insert -- a blind delete would
+        # wipe out this row's full_tour_* columns (set independently, see
+        # save_full_tour below) every time the daily unvisited-tour job
+        # touches a scope that already has a full-tour comparison cached.
+        exists = self.conn.execute(
+            select(self.unvisited_routes.c.scope).where(self.unvisited_routes.c.scope == scope)
+        ).fetchone()
+        values = dict(
+            county_order=json.dumps(county_order),
+            distance_miles=distance_miles,
+            num_counties=len(county_order),
+            unvisited_fips=json.dumps(sorted(unvisited_fips)),
+            computed_utc=time.time(),
+        )
+        if exists is None:
+            self.conn.execute(self.unvisited_routes.insert().values(scope=scope, **values))
+        else:
+            self.conn.execute(
+                self.unvisited_routes.update().where(self.unvisited_routes.c.scope == scope).values(**values))
+        self.conn.commit()
+
+    def save_full_tour(self, scope: str, county_order: list, distance_miles: float):
+        # Only ever called for a scope that already has a row (the daily
+        # unvisited-tour job above always reaches a scope first) -- sets
+        # only the full_tour_* columns, leaving the rest untouched.
+        self.conn.execute(
+            self.unvisited_routes.update().where(self.unvisited_routes.c.scope == scope).values(
+                full_tour_county_order=json.dumps(county_order),
+                full_tour_distance_miles=distance_miles,
+                full_tour_computed_utc=time.time(),
+            ))
+        self.conn.commit()
 
     def insert_historical_points_batch(self, rows: list):
         # rows: list of dicts with source_file/year/latitude/longitude.

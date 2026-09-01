@@ -27,6 +27,29 @@ world_country_json = os.path.join(config_dir, 'world-countries.geojson')
 # Profile -> From URL" import -- see CLAUDE.md.
 gpslogger_properties_file = os.path.join(config_dir, 'gpslogger_default_profile.properties')
 
+# Precomputed pairwise distance matrix (TSPLIB format, 3,100 US county
+# seats -- excludes Alaska/Hawaii, see CLAUDE.md) used by
+# compute_unvisited_routes.py as the primary (real, road-influenced)
+# distance source for the suggested-loop feature. Source:
+# https://www.math.uwaterloo.ca/tsp/county/index.html (Bill Cook's
+# "Optimal Tour for Extra Milers" page).
+usa3100_tsp_file = os.path.join(config_dir, 'usa3100_mixed.tsp')
+# [[name, lat, lon], ...], 3,100 entries, in the exact same order as
+# usa3100_tsp_file's matrix rows/columns (verified this order empirically
+# via a physical-consistency check -- see CLAUDE.md). Extracted from
+# https://www.math.uwaterloo.ca/tsp/county/usa3100_points.html (fetched
+# 2026-09-01) -- that page has no machine-readable download of its own,
+# so this is a one-time extraction of its embedded `var locations` array,
+# not a re-derivable build artifact.
+usa3100_locations_file = os.path.join(config_dir, 'usa3100_locations.json')
+
+# FIPS-prefix set for "continental US" (lower 48 + DC): excludes Alaska
+# (02), Hawaii (15), and the territories (72 PR, 78 VI, 66 Guam, 60
+# American Samoa, 69 N. Mariana Islands). Shared by _initilization's
+# continental map-bounds fit and compute_unvisited_routes.py's mainland
+# scope, so "mainland" means the same thing everywhere in the app.
+non_continental_fips_prefixes = ['02', '15', '72', '78', '66', '60', '69']
+
 # These won't capture the entire county, but are designed
 # to get the bulk of the points from the county.
 # Doesn't have to be all of a county, it can just be a 
