@@ -50,6 +50,11 @@ usa3100_locations_file = os.path.join(config_dir, 'usa3100_locations.json')
 # scope, so "mainland" means the same thing everywhere in the app.
 non_continental_fips_prefixes = ['02', '15', '72', '78', '66', '60', '69']
 
+# Mounted in docker-compose.yml from the host's
+# /mnt/fast_storage/backups/owntracks -- see backup_database.py and
+# cronjob_backup.sh.
+backup_dir = '/backups'
+
 # These won't capture the entire county, but are designed
 # to get the bulk of the points from the county.
 # Doesn't have to be all of a county, it can just be a 

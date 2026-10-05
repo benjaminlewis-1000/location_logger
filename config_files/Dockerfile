@@ -6,7 +6,7 @@ WORKDIR /project
 ##################################
 # Install apt and pip packages
 ##################################
-RUN apt update && apt install -y g++ libgeos-dev libgdal-dev wget cron procps bash-completion
+RUN apt update && apt install -y g++ libgeos-dev libgdal-dev wget cron procps bash-completion zstd
 
 ADD config_files/requirements.txt /project
 
@@ -42,11 +42,13 @@ ADD config_files/cronjob_15_min.sh /etc/periodic/cronjob_15_min.sh
 ADD config_files/cronjob_daily.sh /etc/periodic/cronjob_daily.sh
 ADD config_files/cronjob_gdrive_sync.sh /etc/periodic/cronjob_gdrive_sync.sh
 ADD config_files/cronjob_tsp_routes.sh /etc/periodic/cronjob_tsp_routes.sh
+ADD config_files/cronjob_backup.sh /etc/periodic/cronjob_backup.sh
 
 RUN chmod a+x /etc/periodic/cronjob_15_min.sh
 RUN chmod a+x /etc/periodic/cronjob_daily.sh
 RUN chmod a+x /etc/periodic/cronjob_gdrive_sync.sh
 RUN chmod a+x /etc/periodic/cronjob_tsp_routes.sh
+RUN chmod a+x /etc/periodic/cronjob_backup.sh
 
 ADD config_files/cron-config /etc/cron.d/cron-config
 RUN chmod 0644 /etc/cron.d/cron-config

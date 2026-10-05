@@ -2,4 +2,5 @@
 0 * * * * bash /etc/periodic/cronjob_daily.sh
 */20 * * * * bash /etc/periodic/cronjob_gdrive_sync.sh
 17 3 * * * bash /etc/periodic/cronjob_tsp_routes.sh
+5 2 * * * bash /etc/periodic/cronjob_backup.sh
 
