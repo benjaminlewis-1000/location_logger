@@ -24,6 +24,7 @@ services:
     volumes:
       - '/app/node_modules'
       - /mnt/fast_storage/appdata/location_tracks:/data
+      - /mnt/fast_storage/backups/owntracks:/backups
       - /home/benjamin/docker_via_tunnels/location_track/:/project
     networks:
       - traefik_proxy
