@@ -17,6 +17,7 @@ import requests
 import colorsys
 import geopandas as gpd
 import hashlib
+import hmac
 import json
 import jsonpickle
 import location_db
@@ -59,6 +60,9 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 #        return username
 
 AUTHELIA_URL='https://auth.exploretheworld.tech'
+
+# /api/nearest_location's "within 15 minutes" cutoff.
+MAX_NEAREST_LOCATION_DIFF_SECONDS = 15 * 60
 
 # gdrive resolves its account/token storage relative to $HOME/.config
 # (confirmed empirically -- it does NOT respect $XDG_CONFIG_HOME despite
@@ -203,6 +207,22 @@ def authelia_required(f):
             # If Authelia is down, fail safe and deny access
             abort(503)
 
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def api_key_required(f):
+    # Machine-to-machine auth, distinct from authelia_required's browser-
+    # session cookie -- for routes called by a cron job in another
+    # project (no browser, so no Authelia session to present). A single
+    # shared secret (LOCATION_API_KEY, .env-only, never committed) is
+    # compared via hmac.compare_digest to avoid a timing side-channel.
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        expected = os.environ.get('LOCATION_API_KEY')
+        provided = request.headers.get('X-API-Key', '')
+        if not expected or not hmac.compare_digest(provided, expected):
+            return {'message': 'unauthorized'}, 401
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1218,6 +1238,47 @@ class FlaskApp(FlaskView):
     def serve_gpslogger_properties(self):
         properties_text = _render_gpslogger_properties(self.database)
         return Response(response=properties_text, status=200, mimetype='text/plain')
+
+    @route('/api/nearest_location', methods=['GET'])
+    @api_key_required
+    # Machine-to-machine lookup for another project (e.g. picasa, via a
+    # cron job) to ask "where was I at time X" -- e.g. to geotag a photo
+    # whose own EXIF has no GPS. ?datetime= must be a full ISO 8601
+    # string with an explicit offset or 'Z' (no bare-local-time guessing
+    # -- see CLAUDE.md for why that was made an explicit requirement
+    # rather than assumed). Returns the single nearest position only if
+    # it's within MAX_NEAREST_LOCATION_DIFF_SECONDS; otherwise 404.
+    def serve_nearest_location(self):
+        raw_datetime = request.args.get('datetime')
+        if not raw_datetime:
+            return {'message': "missing required query param 'datetime'"}, 400
+        try:
+            parsed = datetime.fromisoformat(raw_datetime)
+        except ValueError:
+            return {'message': f"could not parse 'datetime' value: {raw_datetime!r} -- "
+                                "expected full ISO 8601 with an explicit offset or 'Z'"}, 400
+        if parsed.tzinfo is None:
+            return {'message': "'datetime' must include an explicit UTC offset or 'Z' "
+                                "(ambiguous without one)"}, 400
+
+        target_utc = parsed.timestamp()
+        nearest = self.database.get_nearest_position(target_utc)
+        if nearest is None:
+            return {'message': 'no positions recorded at all'}, 404
+
+        diff_seconds = abs(nearest['utc_time'] - target_utc)
+        if diff_seconds > MAX_NEAREST_LOCATION_DIFF_SECONDS:
+            return {'message': f'nearest recorded position is {diff_seconds:.0f}s away, '
+                                f'outside the {MAX_NEAREST_LOCATION_DIFF_SECONDS:.0f}s window'}, 404
+
+        return {
+            'latitude': nearest['latitude'],
+            'longitude': nearest['longitude'],
+            'accuracy': nearest['accuracy'],
+            'utc_time': nearest['utc_time'],
+            'date_utc': nearest['date'],
+            'diff_seconds': diff_seconds,
+        }, 200
 
     @route('/log', methods=['GET', 'POST'])
     # https://owntracks.exploretheworld.tech/log

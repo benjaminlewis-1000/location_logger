@@ -1127,6 +1127,27 @@ class locationDB:
 
         return data
 
+    def get_nearest_position(self, target_utc: float):
+        # Nearest row by |utc_time - target|, regardless of how far off
+        # it is -- the caller (serve_flask_interface's /api/nearest_location)
+        # decides what counts as "close enough". Returns None only if
+        # positions is empty.
+        pc = self.positions.c
+        qry = select(pc.id, pc.date, pc.utc_time, pc.latitude, pc.longitude, pc.accuracy) \
+            .order_by(func.abs(pc.utc_time - target_utc).asc()) \
+            .limit(1)
+        row = self.conn.execute(qry).fetchone()
+        if row is None:
+            return None
+        return {
+            'id': row.id,
+            'date': row.date,
+            'utc_time': row.utc_time,
+            'latitude': row.latitude,
+            'longitude': row.longitude,
+            'accuracy': row.accuracy,
+        }
+
     def retrieve_all_data(self):
         pc = self.positions.c
 
