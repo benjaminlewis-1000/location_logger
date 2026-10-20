@@ -61,8 +61,11 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 AUTHELIA_URL='https://auth.exploretheworld.tech'
 
-# /api/nearest_location's "within 15 minutes" cutoff.
+# /api/nearest_location's "within 15 minutes" cutoff, and -- when both
+# bracketing points are farther than that -- the max distance between
+# them for interpolation to still be considered trustworthy.
 MAX_NEAREST_LOCATION_DIFF_SECONDS = 15 * 60
+MAX_INTERPOLATION_ENDPOINT_DISTANCE_METERS = 3000
 
 # gdrive resolves its account/token storage relative to $HOME/.config
 # (confirmed empirically -- it does NOT respect $XDG_CONFIG_HOME despite
@@ -225,6 +228,20 @@ def api_key_required(f):
             return {'message': 'unauthorized'}, 401
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _haversine_meters(lat1, lon1, lat2, lon2):
+    # Plain pairwise haversine -- used by /api/nearest_location to sanity-
+    # check the two points it's about to interpolate between, not a bulk/
+    # vectorized version like compute_unvisited_routes.py's (different
+    # file, different use case: there it's a matrix over thousands of
+    # points, here it's always exactly one pair).
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
 
 
 def _wrap_lon(lon):
@@ -1246,8 +1263,19 @@ class FlaskApp(FlaskView):
     # whose own EXIF has no GPS. ?datetime= must be a full ISO 8601
     # string with an explicit offset or 'Z' (no bare-local-time guessing
     # -- see CLAUDE.md for why that was made an explicit requirement
-    # rather than assumed). Returns the single nearest position only if
-    # it's within MAX_NEAREST_LOCATION_DIFF_SECONDS; otherwise 404.
+    # rather than assumed).
+    #
+    # Finds the two real points bracketing the target time and time-
+    # weight-interpolates between them -- rather than just snapping to
+    # whichever single point is nearest -- whenever at least one side is
+    # within MAX_NEAREST_LOCATION_DIFF_SECONDS. If *both* sides are
+    # farther than that, interpolation is still attempted but only if
+    # the two bracketing points are themselves within
+    # MAX_INTERPOLATION_ENDPOINT_DISTANCE_METERS of each other (a long
+    # gap with the device essentially stationary on both ends -- see
+    # CLAUDE.md for the real case this was built from); otherwise 404,
+    # since a long gap with the endpoints far apart means real,
+    # un-trackable movement happened in between.
     def serve_nearest_location(self):
         raw_datetime = request.args.get('datetime')
         if not raw_datetime:
@@ -1262,22 +1290,56 @@ class FlaskApp(FlaskView):
                                 "(ambiguous without one)"}, 400
 
         target_utc = parsed.timestamp()
-        nearest = self.database.get_nearest_position(target_utc)
-        if nearest is None:
+        before, after = self.database.get_bracketing_positions(target_utc)
+
+        if before is None and after is None:
             return {'message': 'no positions recorded at all'}, 404
 
-        diff_seconds = abs(nearest['utc_time'] - target_utc)
-        if diff_seconds > MAX_NEAREST_LOCATION_DIFF_SECONDS:
-            return {'message': f'nearest recorded position is {diff_seconds:.0f}s away, '
-                                f'outside the {MAX_NEAREST_LOCATION_DIFF_SECONDS:.0f}s window'}, 404
+        # Dataset-boundary case -- target_utc is before the very first
+        # point ever logged, or after the very last one. No second point
+        # to interpolate with, so fall back to the single-point check.
+        if before is None or after is None:
+            only = before if before is not None else after
+            diff_seconds = abs(only['utc_time'] - target_utc)
+            if diff_seconds > MAX_NEAREST_LOCATION_DIFF_SECONDS:
+                return {'message': f'nearest recorded position is {diff_seconds:.0f}s away, '
+                                    f'outside the {MAX_NEAREST_LOCATION_DIFF_SECONDS:.0f}s window'}, 404
+            return {
+                'interpolated': False,
+                'latitude': only['latitude'],
+                'longitude': only['longitude'],
+                'accuracy': only['accuracy'],
+                'utc_time': only['utc_time'],
+                'date_utc': only['date'],
+                'diff_seconds': diff_seconds,
+            }, 200
+
+        gap_before_seconds = target_utc - before['utc_time']
+        gap_after_seconds = after['utc_time'] - target_utc
+        endpoint_distance_meters = _haversine_meters(
+            before['latitude'], before['longitude'], after['latitude'], after['longitude'])
+
+        close_in_time = (gap_before_seconds <= MAX_NEAREST_LOCATION_DIFF_SECONDS
+                          or gap_after_seconds <= MAX_NEAREST_LOCATION_DIFF_SECONDS)
+        close_in_space = endpoint_distance_meters <= MAX_INTERPOLATION_ENDPOINT_DISTANCE_METERS
+
+        if not close_in_time and not close_in_space:
+            return {'message': f'nearest bracketing positions are {gap_before_seconds:.0f}s '
+                                f'before / {gap_after_seconds:.0f}s after, '
+                                f'{endpoint_distance_meters:.0f}m apart -- too far in both '
+                                'time and space to interpolate'}, 404
+
+        weight = gap_before_seconds / (gap_before_seconds + gap_after_seconds)
+        interpolated_lat = before['latitude'] + (after['latitude'] - before['latitude']) * weight
+        interpolated_lon = before['longitude'] + (after['longitude'] - before['longitude']) * weight
 
         return {
-            'latitude': nearest['latitude'],
-            'longitude': nearest['longitude'],
-            'accuracy': nearest['accuracy'],
-            'utc_time': nearest['utc_time'],
-            'date_utc': nearest['date'],
-            'diff_seconds': diff_seconds,
+            'interpolated': True,
+            'latitude': interpolated_lat,
+            'longitude': interpolated_lon,
+            'gap_before_seconds': gap_before_seconds,
+            'gap_after_seconds': gap_after_seconds,
+            'endpoint_distance_meters': endpoint_distance_meters,
         }, 200
 
     @route('/log', methods=['GET', 'POST'])
