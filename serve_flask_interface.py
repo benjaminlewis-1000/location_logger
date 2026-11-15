@@ -614,39 +614,48 @@ class FlaskApp(FlaskView):
         # recomputes this in lockstep with its own filtered z on every
         # move, so a county that drops out of "visited by year X" goes
         # transparent again rather than just fading color.
+        # Solid black county borders (was thin grey #888/0.4) -- the old
+        # thin grey line read fine against an opaque fill, but with
+        # unvisited counties now fully transparent (see marker_opacity
+        # above), it washed out against the basemap underneath. Bumped
+        # to black so outlines stay clearly visible regardless of fill.
+        # The state-boundary overlay below is bumped to match (now
+        # black too, width increased 1.5->2) so it still reads as
+        # visibly bolder than these county lines, preserving the
+        # county-vs-state line hierarchy rather than flattening it.
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=main_df['FIPS'], z=main_df['year'],
                 marker_opacity=np.where(main_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.0, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=ak_df['FIPS'], z=ak_df['year'],
                 marker_opacity=np.where(ak_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox2', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.0, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=hi_df['FIPS'], z=hi_df['year'],
                 marker_opacity=np.where(hi_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox3', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.0, marker_line_color='#000',
             ))
         # State-boundary overlay on the main map only (not the AK/HI
         # insets, which are already single-state views) -- a second
         # trace drawn on top, transparent fill (its z/colorscale are
         # irrelevant, chosen only so no fill color shows) and a
-        # thicker/darker line than the county borders below it, so
-        # state lines read clearly at a glance even zoomed into county
-        # detail. hoverinfo='skip' keeps it from swallowing hover
-        # tooltips meant for the county layer underneath.
+        # thicker line than the county borders below it, so state lines
+        # read clearly at a glance even zoomed into county detail.
+        # hoverinfo='skip' keeps it from swallowing hover tooltips meant
+        # for the county layer underneath.
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson,
                 locations=[f['id'] for f in self.states_geojson['features']],
                 z=[0] * len(self.states_geojson['features']),
                 colorscale=[[0, 'rgba(0,0,0,0)'], [1, 'rgba(0,0,0,0)']],
                 showscale=False, subplot='mapbox', name='',
-                marker_line_width=1.5, marker_line_color='#333',
+                marker_line_width=2.0, marker_line_color='#000',
                 hoverinfo='skip',
             ))
 
@@ -1156,24 +1165,27 @@ class FlaskApp(FlaskView):
         fig = go.Figure()
         # Same opacity-by-visited treatment as /counties above (0 for
         # unvisited, 0.5 for visited) -- see that trace's comment for
-        # the full reasoning.
+        # the full reasoning. Solid black borders (was thin grey
+        # #888/0.4), same reasoning as /counties' county borders --
+        # /states has no separate overlay trace, so this is the only
+        # line work on this page.
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=main_df['state'], z=main_df['year'],
                 marker_opacity=np.where(main_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.5, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=ak_df['state'], z=ak_df['year'],
                 marker_opacity=np.where(ak_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox2', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.5, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=hi_df['state'], z=hi_df['year'],
                 marker_opacity=np.where(hi_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox3', name='',
-                marker_line_width=0.4, marker_line_color='#888',
+                marker_line_width=1.5, marker_line_color='#000',
             ))
 
         fig.update_layout(
