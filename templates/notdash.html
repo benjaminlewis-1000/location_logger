@@ -796,17 +796,21 @@
 
           var traceIndices = [];
           var newZ = [];
-          // Opacity has to track the *filtered* z, not the original --
-          // a county/state that drops out of "visited by year X" needs
-          // to go transparent again (basemap shows through), not just
-          // fade color, matching the server-rendered initial state's
-          // same 0/0.5 rule (see __precompute_graph/serve_state_graph).
-          var newOpacity = [];
+          // Transparency for a filtered-out county/state rides along
+          // automatically here -- z gets set to UNVISITED_Z below,
+          // which always maps to colorscale_county's alpha-0 stop
+          // (cmin stays pinned to UNVISITED_Z, see below), no separate
+          // opacity array needed. (An earlier version pushed a parallel
+          // marker.opacity array instead -- reverted: on a trace that
+          // shares a coloraxis, marker.opacity=0 was found to suppress
+          // the border too, not just the fill. Baking alpha into the
+          // color itself, as colorscale_county now does server-side,
+          // doesn't have that problem.)
           originalZ.forEach(function(z, idx) {
             if (!z) return;
             var locs = graphs.data[idx].locations || [];
             traceIndices.push(idx);
-            var filteredZ = z.map(function(v, i) {
+            newZ.push(z.map(function(v, i) {
               var fips = locs[i];
               if (currentMode === 'only') {
                 var years = visitedYears.hasOwnProperty(fips) ? visitedYears[fips] : [];
@@ -814,9 +818,7 @@
               }
               var firstYear = firstVisitYear.hasOwnProperty(fips) ? firstVisitYear[fips] : v;
               return (v > UNVISITED_Z && firstYear > cutoffOffset) ? UNVISITED_Z : v;
-            });
-            newZ.push(filteredZ);
-            newOpacity.push(filteredZ.map(function(v) { return v > UNVISITED_Z ? 0.5 : 0.0; }));
+            }));
           });
 
           sliderValueLabel.textContent = (currentMode === 'only' ? 'Only ' : 'Through ') + cutoff;
@@ -842,7 +844,7 @@
           // the county that defines the floor is exactly the one this
           // made hardest to see. UNVISITED_Z leaves genuine headroom
           // below every real year, however far back it goes.
-          Plotly.update('chart', {z: newZ, 'marker.opacity': newOpacity}, {'coloraxis.cmin': UNVISITED_Z, 'coloraxis.cmax': cutoffOffset}, traceIndices);
+          Plotly.update('chart', {z: newZ}, {'coloraxis.cmin': UNVISITED_Z, 'coloraxis.cmax': cutoffOffset}, traceIndices);
         }
 
         slider.addEventListener('input', applyYearFilter);
