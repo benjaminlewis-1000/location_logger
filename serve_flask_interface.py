@@ -304,6 +304,24 @@ def _country_color(code):
     r, g, b = colorsys.hls_to_rgb(hue, 0.50, 0.65)
     return '#{:02x}{:02x}{:02x}'.format(round(r * 255), round(g * 255), round(b * 255))
 
+def _hex_to_rgba(hex_color, alpha):
+    # Bakes alpha directly into a colorscale stop's color, rather than
+    # a per-location marker.opacity array -- see colorscale_county below
+    # for why: marker.opacity=0 on a Choroplethmapbox trace that uses a
+    # *shared* coloraxis (counties/states) suppresses the border too,
+    # not just the fill, unlike a trace-local colorscale (/countries'
+    # own trace) where the two are independent -- a real difference
+    # found empirically, not documented/assumed. Baking alpha into the
+    # color itself leaves marker.opacity untouched (default, fully
+    # opaque) everywhere, so borders can never be suppressed this way --
+    # the same trick the state-boundary overlay trace already uses
+    # (rgba(0,0,0,0) fill, default opacity, border renders fine).
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    return f'rgba({r},{g},{b},{alpha})'
+
 def _format_year_ranges(years):
     # [2015, 2018, 2019, 2020, 2021, 2022, 2024, 2025, 2026] ->
     # "2015, 2018-2022, 2024-2026" -- any run of 2+ consecutive years
@@ -465,8 +483,14 @@ class FlaskApp(FlaskView):
         #cls.colorscale = px.colors.sample_colorscale("viridis", [n/(n_colors -1) for n in range(n_colors)])
         cls.colorscale = cls.colorscale[::-1]
         # cls.colorscale = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725', '#440154', '#482878', '#3e4989', '#31688e', '#26828e', '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725']
-        cls.colorscale_county = cls.colorscale.copy()
-        cls.colorscale_county[0] = '#ffeae8'
+        # Alpha baked into every stop (0.5, matching /countries' visited
+        # opacity) rather than a per-location marker.opacity array --
+        # see _hex_to_rgba for why. Index 0 (the unvisited/UNVISITED_Z
+        # slot, since coloraxis.cmin stays pinned there -- see
+        # notdash.html) gets alpha 0 instead, fully transparent, so the
+        # basemap shows through untinted for unvisited counties/states.
+        cls.colorscale_county = [_hex_to_rgba(c, 0.5) for c in cls.colorscale]
+        cls.colorscale_county[0] = 'rgba(0,0,0,0)'
 
         cls.template = None
         cls.compute_running = False
@@ -606,37 +630,39 @@ class FlaskApp(FlaskView):
         fig = go.Figure()
 
         # Fill opacity per county -- 0 (fully transparent) for unvisited,
-        # so the basemap shows through untinted instead of the flat
-        # '#ffeae8' override color, 0.5 for visited, same treatment as
-        # /countries' marker.opacity array. Borders (marker_line) stay
-        # fully opaque regardless. The year slider (notdash.html)
-        # recomputes this in lockstep with its own filtered z on every
-        # move, so a county that drops out of "visited by year X" goes
-        # transparent again rather than just fading color.
+        # 0.5 for visited, baked into colorscale_county's own rgba alpha
+        # (see _hex_to_rgba/colorscale_county above) rather than a
+        # per-location marker.opacity array -- marker.opacity on a
+        # shared-coloraxis trace was found to suppress the border too,
+        # not just the fill (a real Plotly/mapbox-gl quirk, found via a
+        # real device, not documented/assumed beforehand -- unlike
+        # /countries' trace-local colorscale, where marker.opacity only
+        # affects the fill). Borders (marker_line) are completely
+        # unaffected by z/color either way. The year slider (notdash.html)
+        # rides along automatically: a county that drops out of "visited
+        # by year X" gets z set to UNVISITED_Z, which always maps to this
+        # colorscale's alpha-0 stop (coloraxis.cmin stays pinned there).
         # Solid black county borders (was thin grey #888/0.4) -- the old
         # thin grey line read fine against an opaque fill, but with
-        # unvisited counties now fully transparent (see marker_opacity
-        # above), it washed out against the basemap underneath. Bumped
-        # to black so outlines stay clearly visible regardless of fill.
-        # The state-boundary overlay below is bumped to match (now
-        # black too, width increased 1.5->2) so it still reads as
-        # visibly bolder than these county lines, preserving the
-        # county-vs-state line hierarchy rather than flattening it.
+        # unvisited counties now transparent, it washed out against the
+        # basemap underneath. Bumped to black so outlines stay clearly
+        # visible regardless of fill. The state-boundary overlay below
+        # is bumped to match (now black too, width increased 1.5->2) so
+        # it still reads as visibly bolder than these county lines,
+        # preserving the county-vs-state line hierarchy rather than
+        # flattening it.
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=main_df['FIPS'], z=main_df['year'],
-                marker_opacity=np.where(main_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox', name='',
                 marker_line_width=1.0, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=ak_df['FIPS'], z=ak_df['year'],
-                marker_opacity=np.where(ak_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox2', name='',
                 marker_line_width=1.0, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.counties, locations=hi_df['FIPS'], z=hi_df['year'],
-                marker_opacity=np.where(hi_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox3', name='',
                 marker_line_width=1.0, marker_line_color='#000',
             ))
@@ -1162,27 +1188,24 @@ class FlaskApp(FlaskView):
         hi_df = state_df[state_df['state'] == 'HI']
 
         fig = go.Figure()
-        # Same opacity-by-visited treatment as /counties above (0 for
-        # unvisited, 0.5 for visited) -- see that trace's comment for
-        # the full reasoning. Solid black borders (was thin grey
-        # #888/0.4), same reasoning as /counties' county borders --
-        # /states has no separate overlay trace, so this is the only
-        # line work on this page.
+        # Same opacity-by-visited treatment as /counties above (baked
+        # into colorscale_county's rgba alpha, not marker.opacity -- see
+        # that trace's comment for the full reasoning). Solid black
+        # borders (was thin grey #888/0.4), same reasoning as /counties'
+        # county borders -- /states has no separate overlay trace, so
+        # this is the only line work on this page.
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=main_df['state'], z=main_df['year'],
-                marker_opacity=np.where(main_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox', name='',
                 marker_line_width=1.5, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=ak_df['state'], z=ak_df['year'],
-                marker_opacity=np.where(ak_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox2', name='',
                 marker_line_width=1.5, marker_line_color='#000',
             ))
         fig.add_trace(go.Choroplethmapbox(
                 geojson=self.states_geojson, locations=hi_df['state'], z=hi_df['year'],
-                marker_opacity=np.where(hi_df['year'] > -1, 0.5, 0.0),
                 coloraxis='coloraxis', subplot='mapbox3', name='',
                 marker_line_width=1.5, marker_line_color='#000',
             ))
